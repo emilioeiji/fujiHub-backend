@@ -23,8 +23,6 @@ git clone git@github.com:emilioeiji/fujiHub-web.git
 cd fujiHub/backend
 ```
 
-````
-
 ### 2. Crie e ative o virtualenv
 
 ```bash
@@ -115,4 +113,3 @@ Este projeto é de uso interno do **FujiHub**.
 
 ---
 ```
-````
