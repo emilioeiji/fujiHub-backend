@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.0/ref/settings/
 """
 
 import os
+from datetime import timedelta
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -43,7 +44,8 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework.authtoken',
     "core",
-    "login"
+    "login",
+    "master"
 ]
 
 MIDDLEWARE = [
@@ -61,6 +63,14 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     )
+}
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),   # tempo de vida do access token
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),      # tempo de vida do refresh token
+    "ROTATE_REFRESH_TOKENS": True,                    # gera novo refresh a cada uso
+    "BLACKLIST_AFTER_ROTATION": True,                 # invalida refresh antigo
+    "AUTH_HEADER_TYPES": ("Bearer",),                 # formato do header: Authorization: Bearer <token>
 }
 
 CORS_ALLOW_ALL_ORIGINS = True

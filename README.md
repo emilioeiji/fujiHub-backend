@@ -108,8 +108,3 @@ python manage.py test
 ## 📜 Licença
 
 Este projeto é de uso interno do **FujiHub**.
-
-```
-
----
-```
