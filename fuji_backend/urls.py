@@ -13,6 +13,7 @@ urlpatterns = [
     path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("api/", include("users.urls")),
     path("api/", include("master.urls")),
+    path("api/inventory/", include("inventory.urls")),
 ]
 
 # Serve os assets do Vite em modo DEBUG
@@ -26,4 +27,3 @@ if settings.DEBUG:
 urlpatterns += [
     re_path(r"^(?!api/|admin(?:/.*)?|static/).*$", TemplateView.as_view(template_name="index.html")),
 ]
-
