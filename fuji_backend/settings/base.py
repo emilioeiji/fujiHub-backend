@@ -14,21 +14,41 @@ import os
 from datetime import timedelta
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 WEB_DIST = BASE_DIR.parent / "web" / "dist"
+load_dotenv(BASE_DIR / ".env")
+
+
+def env_bool(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_list(name, default=None):
+    value = os.getenv(name)
+    if value is None:
+        return default or []
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-t2176q^8qmp1xhgl9y4)n9*z#dzp(3z4!=$r^-wdrp1*(s2&^v"
+SECRET_KEY = os.getenv(
+    "DJANGO_SECRET_KEY",
+    "django-insecure-dev-only-change-me",
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = env_bool("DJANGO_DEBUG", False)
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", ["*"])
 
 
 # Application definition
@@ -43,6 +63,16 @@ INSTALLED_APPS = [
     "corsheaders",
     'rest_framework',
     'rest_framework.authtoken',
+    "accounts.apps.AccountsConfig",
+    "organizations.apps.OrganizationsConfig",
+    "employees.apps.EmployeesConfig",
+    "inventory.apps.InventoryConfig",
+    "medical.apps.MedicalConfig",
+    "attendance.apps.AttendanceConfig",
+    "operations.apps.OperationsConfig",
+    "audit.apps.AuditConfig",
+    "common.apps.CommonConfig",
+    "reports.apps.ReportsConfig",
     "core",
     "login",
     "master"
@@ -73,12 +103,15 @@ SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),                 # formato do header: Authorization: Bearer <token>
 }
 
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = env_bool("CORS_ALLOW_ALL_ORIGINS", False)
 
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
+CORS_ALLOWED_ORIGINS = env_list(
+    "CORS_ALLOWED_ORIGINS",
+    [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+)
 
 CORS_ALLOW_HEADERS = [
     "content-type",
@@ -95,11 +128,6 @@ CORS_ALLOW_METHODS = [
 ]
 
 ROOT_URLCONF = "fuji_backend.urls"
-
-from pathlib import Path
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-WEB_DIST = BASE_DIR.parent / "web" / "dist"
 
 
 TEMPLATES = [
@@ -125,12 +153,28 @@ WSGI_APPLICATION = "fuji_backend.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/5.0/ref/settings/#databases
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+if os.getenv("DATABASE_ENGINE", "mysql") == "sqlite":
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.mysql",
+            "NAME": os.getenv("MYSQL_DATABASE", "django"),
+            "USER": os.getenv("MYSQL_USER", "django"),
+            "PASSWORD": os.getenv("MYSQL_PASSWORD", "django"),
+            "HOST": os.getenv("MYSQL_HOST", "db"),
+            "PORT": os.getenv("MYSQL_PORT", "3306"),
+            "OPTIONS": {
+                "charset": "utf8mb4",
+                "init_command": "SET sql_mode='STRICT_TRANS_TABLES'",
+            },
+        },
+    }
 
 
 # Password validation

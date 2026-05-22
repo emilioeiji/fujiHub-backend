@@ -36,9 +36,9 @@ O `.devcontainer/docker-compose.yml` sobe:
 
 - `backend`: container Python/Node usado para rodar o Django.
 - `mobile`: container Node usado para rodar o Expo.
-- `db`: MySQL 8.3, disponível caso o projeto passe a usar MySQL.
+- `db`: MySQL 8.3 usado pelo backend em desenvolvimento.
 
-Atualmente o backend está configurado para usar SQLite em `backend/db.sqlite3`.
+O backend usa MySQL por padrão. O SQLite legado em `backend/db.sqlite3` fica apenas como referência/migração local.
 
 ### Sem VS Code
 
@@ -51,6 +51,13 @@ docker compose -f .devcontainer/docker-compose.yml up -d --build
 ---
 
 ## Rodando o backend
+
+Antes de iniciar, confira as variáveis em `.env`. O repositório inclui `.env.example`
+como referência e o arquivo `.env` local fica fora do Git.
+
+O desenvolvimento usa `DJANGO_SETTINGS_MODULE=fuji_backend.settings.dev`.
+Para produção, use `DJANGO_SETTINGS_MODULE=fuji_backend.settings.prod` com
+`DJANGO_SECRET_KEY`, `DJANGO_ALLOWED_HOSTS` e `CORS_ALLOWED_ORIGINS` definidos no ambiente.
 
 Dentro do Dev Container, ou via `docker compose exec`, rode:
 
@@ -80,6 +87,24 @@ Para verificar se a configuração do Django está OK:
 
 ```bash
 python manage.py check
+```
+
+### Banco de dados
+
+No Dev Container, o Django usa o serviço MySQL do compose:
+
+```text
+MYSQL_HOST=db
+MYSQL_PORT=3306
+MYSQL_DATABASE=django
+MYSQL_USER=django
+MYSQL_PASSWORD=django
+```
+
+Para consultar temporariamente o SQLite legado, use:
+
+```bash
+DATABASE_ENGINE=sqlite python manage.py shell
 ```
 
 ---

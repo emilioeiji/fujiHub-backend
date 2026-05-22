@@ -1,0 +1,13 @@
+from .base import *  # noqa: F403
+from .base import env_bool, env_list
+
+DEBUG = False
+
+ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS")
+
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS")
+
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SESSION_COOKIE_SECURE = env_bool("DJANGO_SESSION_COOKIE_SECURE", True)
+CSRF_COOKIE_SECURE = env_bool("DJANGO_CSRF_COOKIE_SECURE", True)
