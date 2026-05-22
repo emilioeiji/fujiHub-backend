@@ -13,6 +13,7 @@ from .models import (
 class UniformRequestItemInline(admin.TabularInline):
     model = UniformRequestItem
     extra = 0
+    readonly_fields = ("unit_cost_snapshot", "total_cost")
 
 
 class UniformRequestEventInline(admin.TabularInline):
@@ -38,6 +39,9 @@ class UniformItemAdmin(admin.ModelAdmin):
         "color",
         "stock_quantity",
         "minimum_stock",
+        "unit_cost",
+        "average_cost",
+        "average_price",
         "is_active",
     )
     list_filter = ("category", "size", "color", "is_active")
@@ -46,16 +50,17 @@ class UniformItemAdmin(admin.ModelAdmin):
 
 @admin.register(UniformRequest)
 class UniformRequestAdmin(admin.ModelAdmin):
-    list_display = ("id", "employee", "status", "request_date", "requested_by")
-    list_filter = ("status", "request_date")
+    list_display = ("id", "employee", "request_type", "status", "request_date", "total_cost", "requested_by")
+    list_filter = ("request_type", "status", "request_date")
     search_fields = ("employee__employee_id", "employee__name_en", "employee__name_jp", "reason")
     inlines = [UniformRequestItemInline, UniformRequestEventInline]
 
 
 @admin.register(UniformRequestItem)
 class UniformRequestItemAdmin(admin.ModelAdmin):
-    list_display = ("request", "item", "quantity")
+    list_display = ("request", "item", "quantity", "unit_cost_snapshot", "total_cost")
     search_fields = ("request__employee__employee_id", "item__sku", "item__name")
+    readonly_fields = ("total_cost",)
 
 
 @admin.register(StockMovement)

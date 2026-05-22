@@ -14,6 +14,7 @@ urlpatterns = [
     path("api/", include("users.urls")),
     path("api/", include("master.urls")),
     path("api/inventory/", include("inventory.urls")),
+    path("api/medical/", include("medical.urls")),
 ]
 
 # Serve os assets do Vite em modo DEBUG

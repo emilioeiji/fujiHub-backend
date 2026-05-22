@@ -42,6 +42,9 @@ class UniformItemSerializer(serializers.ModelSerializer):
             "color",
             "stock_quantity",
             "minimum_stock",
+            "unit_cost",
+            "average_cost",
+            "average_price",
             "notes",
             "is_active",
             "created_at",
@@ -64,8 +67,15 @@ class UniformRequestItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = UniformRequestItem
-        fields = ["id", "item", "item_detail", "quantity"]
-        read_only_fields = ["id", "item_detail"]
+        fields = [
+            "id",
+            "item",
+            "item_detail",
+            "quantity",
+            "unit_cost_snapshot",
+            "total_cost",
+        ]
+        read_only_fields = ["id", "item_detail", "unit_cost_snapshot", "total_cost"]
 
 
 class UniformRequestSerializer(serializers.ModelSerializer):
@@ -78,6 +88,7 @@ class UniformRequestSerializer(serializers.ModelSerializer):
             "employee",
             "requested_by",
             "status",
+            "request_type",
             "reason",
             "request_date",
             "approved_by",
@@ -90,6 +101,7 @@ class UniformRequestSerializer(serializers.ModelSerializer):
             "cancelled_at",
             "notes",
             "items",
+            "total_cost",
             "is_active",
             "created_at",
             "updated_at",
@@ -112,14 +124,34 @@ class UniformRequestSerializer(serializers.ModelSerializer):
             "updated_at",
             "created_by",
             "updated_by",
+            "total_cost",
         ]
+
+    def validate(self, attrs):
+        request_type = attrs.get(
+            "request_type",
+            getattr(self.instance, "request_type", UniformRequest.RequestType.DONATION),
+        )
+        reason = attrs.get("reason", getattr(self.instance, "reason", ""))
+
+        if request_type == UniformRequest.RequestType.DONATION and not reason:
+            raise serializers.ValidationError(
+                {"reason": "Reason is required for donation uniform requests."}
+            )
+
+        return attrs
 
     def create(self, validated_data):
         items_data = validated_data.pop("items", [])
         uniform_request = UniformRequest.objects.create(**validated_data)
 
         for item_data in items_data:
-            UniformRequestItem.objects.create(request=uniform_request, **item_data)
+            item = item_data["item"]
+            UniformRequestItem.objects.create(
+                request=uniform_request,
+                unit_cost_snapshot=item.unit_cost,
+                **item_data,
+            )
 
         return uniform_request
 

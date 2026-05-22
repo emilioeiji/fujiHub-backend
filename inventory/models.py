@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.db.models import Sum
 
 from common.models import BaseModel
 
@@ -31,6 +32,9 @@ class UniformItem(BaseModel):
     color = models.CharField(max_length=50)
     stock_quantity = models.PositiveIntegerField(default=0)
     minimum_stock = models.PositiveIntegerField(default=0)
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    average_cost = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    average_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -46,6 +50,10 @@ class UniformItem(BaseModel):
 
 
 class UniformRequest(BaseModel):
+    class RequestType(models.TextChoices):
+        DONATION = "donation", "Doacao"
+        PURCHASE = "purchase", "Compra"
+
     class Status(models.TextChoices):
         PENDING = "pending", "Pendente"
         APPROVED = "approved", "Aprovado"
@@ -70,7 +78,12 @@ class UniformRequest(BaseModel):
         choices=Status.choices,
         default=Status.PENDING,
     )
-    reason = models.CharField(max_length=255)
+    request_type = models.CharField(
+        max_length=20,
+        choices=RequestType.choices,
+        default=RequestType.DONATION,
+    )
+    reason = models.CharField(max_length=255, blank=True)
     request_date = models.DateField()
     approved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -116,6 +129,11 @@ class UniformRequest(BaseModel):
     def __str__(self):
         return f"{self.employee_id} - {self.status}"
 
+    @property
+    def total_cost(self):
+        total = self.items.aggregate(total=Sum("total_cost"))["total"]
+        return total or 0
+
 
 class UniformRequestItem(models.Model):
     request = models.ForeignKey(
@@ -129,12 +147,21 @@ class UniformRequestItem(models.Model):
         related_name="request_items",
     )
     quantity = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+    unit_cost_snapshot = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    total_cost = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
     class Meta:
         ordering = ["id"]
 
     def __str__(self):
         return f"{self.item.sku} x {self.quantity}"
+
+    def save(self, *args, **kwargs):
+        if self.item_id and self.unit_cost_snapshot == 0:
+            self.unit_cost_snapshot = self.item.unit_cost
+
+        self.total_cost = self.quantity * self.unit_cost_snapshot
+        super().save(*args, **kwargs)
 
 
 class StockMovement(models.Model):

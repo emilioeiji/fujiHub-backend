@@ -1,6 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
+from decimal import Decimal
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -47,6 +48,7 @@ class UniformWorkflowServiceTests(TestCase):
             color="White",
             stock_quantity=10,
             minimum_stock=2,
+            unit_cost=Decimal("1200.50"),
         )
         self.uniform_request = UniformRequest.objects.create(
             employee=self.employee,
@@ -218,6 +220,7 @@ class InventoryAPITests(TestCase):
             color="Black",
             stock_quantity=8,
             minimum_stock=2,
+            unit_cost=Decimal("2500.75"),
         )
 
     def test_list_items(self):
@@ -258,6 +261,7 @@ class InventoryAPITests(TestCase):
             "color": "Navy",
             "stock_quantity": 20,
             "minimum_stock": 5,
+            "unit_cost": "780.25",
             "notes": "Estoque inicial",
         }
 
@@ -266,6 +270,7 @@ class InventoryAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertTrue(UniformItem.objects.filter(sku="UNI-CAP-FREE-NAVY").exists())
         self.assertEqual(response.data["created_by"], self.user.pk)
+        self.assertEqual(response.data["unit_cost"], "780.25")
 
     def test_create_request_with_nested_item(self):
         response = self._create_uniform_request()
@@ -274,9 +279,67 @@ class InventoryAPITests(TestCase):
         self.assertEqual(response.data["employee"], self.employee.pk)
         self.assertEqual(response.data["status"], UniformRequest.Status.PENDING)
         self.assertEqual(response.data["requested_by"], self.user.pk)
+        self.assertEqual(response.data["request_type"], UniformRequest.RequestType.DONATION)
         self.assertEqual(len(response.data["items"]), 1)
         self.assertEqual(response.data["items"][0]["item"], self.item.pk)
         self.assertEqual(response.data["items"][0]["quantity"], 2)
+        self.assertEqual(response.data["items"][0]["unit_cost_snapshot"], "2500.75")
+        self.assertEqual(response.data["items"][0]["total_cost"], "5001.50")
+        self.assertEqual(response.data["total_cost"], Decimal("5001.50"))
+
+    def test_create_purchase_request_without_reason_is_allowed(self):
+        response = self._create_uniform_request(
+            request_type=UniformRequest.RequestType.PURCHASE,
+            reason="",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["request_type"], UniformRequest.RequestType.PURCHASE)
+        self.assertEqual(response.data["reason"], "")
+
+    def test_create_donation_request_without_reason_returns_error(self):
+        response = self._create_uniform_request(reason="")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("reason", response.data)
+
+    def test_create_donation_request_with_reason_is_allowed(self):
+        response = self._create_uniform_request(reason="Entrega sem custo")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["reason"], "Entrega sem custo")
+
+    def test_request_item_cost_snapshot_keeps_historical_item_cost(self):
+        response = self._create_uniform_request()
+        request_item = UniformRequestItem.objects.get(request_id=response.data["id"])
+
+        self.item.unit_cost = Decimal("9999.99")
+        self.item.save()
+        request_item.refresh_from_db()
+
+        self.assertEqual(request_item.unit_cost_snapshot, Decimal("2500.75"))
+        self.assertEqual(request_item.total_cost, Decimal("5001.50"))
+
+    def test_request_total_cost_sums_items(self):
+        second_item = UniformItem.objects.create(
+            sku="UNI-CAP-FREE-RED",
+            name="Bone",
+            category=self.cap_category,
+            size="Free",
+            color="Red",
+            stock_quantity=3,
+            minimum_stock=1,
+            unit_cost=Decimal("300.00"),
+        )
+        response = self._create_uniform_request(
+            items=[
+                {"item": self.item.pk, "quantity": 2},
+                {"item": second_item.pk, "quantity": 3},
+            ]
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["total_cost"], Decimal("5901.50"))
 
     def test_approve_request(self):
         uniform_request = self._request_from_api()
@@ -446,13 +509,14 @@ class InventoryAPITests(TestCase):
         self.assertEqual(movements_response.status_code, status.HTTP_200_OK)
         self.assertEqual(events_response.status_code, status.HTTP_200_OK)
 
-    def _create_uniform_request(self):
+    def _create_uniform_request(self, *, request_type=None, reason="Troca de uniforme", items=None):
         payload = {
             "employee": self.employee.pk,
-            "reason": "Troca de uniforme",
+            "request_type": request_type or UniformRequest.RequestType.DONATION,
+            "reason": reason,
             "request_date": timezone.localdate().isoformat(),
             "notes": "Solicitacao criada pela API",
-            "items": [
+            "items": items or [
                 {
                     "item": self.item.pk,
                     "quantity": 2,

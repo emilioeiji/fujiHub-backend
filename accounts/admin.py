@@ -13,6 +13,6 @@ class RoleAdmin(admin.ModelAdmin):
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
-    list_display = ("user", "role", "department", "is_active", "updated_at")
-    list_filter = ("role", "department", "is_active")
+    list_display = ("user", "role", "department", "language", "is_active", "updated_at")
+    list_filter = ("role", "department", "language", "is_active")
     search_fields = ("user__username", "user__email", "role__name", "department__label_pt")

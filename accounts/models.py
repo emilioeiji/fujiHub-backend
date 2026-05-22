@@ -19,6 +19,10 @@ class Role(models.Model):
 
 
 class UserProfile(models.Model):
+    class Language(models.TextChoices):
+        PT_BR = "pt-BR", "Português (Brasil)"
+        JA_JP = "ja-JP", "日本語"
+
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -37,6 +41,11 @@ class UserProfile(models.Model):
         blank=True,
         null=True,
         related_name="user_profiles",
+    )
+    language = models.CharField(
+        max_length=10,
+        choices=Language.choices,
+        default=Language.PT_BR,
     )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

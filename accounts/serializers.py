@@ -33,6 +33,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "role_code",
             "department",
             "department_label",
+            "language",
             "is_active",
             "created_at",
             "updated_at",

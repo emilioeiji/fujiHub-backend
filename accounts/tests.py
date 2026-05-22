@@ -47,6 +47,17 @@ class AccountHelperTests(TestCase):
         self.assertIsNone(get_user_role(self.user))
         self.assertIsNone(user_department(self.user))
 
+    def test_superuser_without_profile_is_treated_as_admin_role(self):
+        superuser = get_user_model().objects.create_superuser(
+            username="root-admin",
+            password="password",
+        )
+
+        self.assertEqual(get_user_role(superuser).code, "admin")
+        self.assertTrue(has_role(superuser, "admin"))
+        self.assertTrue(has_any_role(superuser, ["saude", "admin"]))
+        self.assertFalse(has_role(superuser, "supervisor"))
+
 
 class AccountPermissionTests(TestCase):
     def setUp(self):
