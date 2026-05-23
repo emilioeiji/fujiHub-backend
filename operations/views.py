@@ -1,4 +1,6 @@
+import csv
 from datetime import datetime, timedelta
+from io import StringIO
 
 from django.db import transaction
 from django.db.models import Count
@@ -26,6 +28,7 @@ from .serializers import (
     PositionDailyRequirementSerializer,
     WorkTimeCodeSerializer,
 )
+from .services import build_calendar_cell_parser_context, parse_calendar_cell_value
 
 
 class ActorMixin:
@@ -264,20 +267,9 @@ class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
         return queryset.order_by("assignment__display_order", "date")
 
     def _paste_tsv(self, calendar, assignments, start_date, tsv):
-        position_lookup = self._build_lookup(
-            OperationalPosition.objects.filter(department=calendar.department),
-            fields=("code", "name_pt", "name_jp"),
-        )
-        status_lookup = self._build_lookup(
-            AttendanceStatus.objects.filter(is_active=True),
-            fields=("code", "label_pt", "label_jp"),
-        )
-        work_time_lookup = self._build_lookup(
-            WorkTimeCode.objects.filter(is_active=True),
-            fields=("code", "label_pt", "label_jp"),
-        )
+        parser_context = build_calendar_cell_parser_context(calendar)
 
-        rows = [row.split("\t") for row in tsv.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+        rows = list(csv.reader(StringIO(tsv), delimiter="\t"))
         if rows and rows[-1] == [""]:
             rows.pop()
 
@@ -299,7 +291,7 @@ class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
                         break
 
                     value = raw_value.strip()
-                    parsed = self._parse_paste_value(value, position_lookup, status_lookup, work_time_lookup)
+                    parsed = parse_calendar_cell_value(value, parser_context)
                     cell, was_created = CalendarDayCell.objects.get_or_create(
                         assignment=assignment,
                         date=cell_date,
@@ -311,10 +303,10 @@ class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
 
                     cell.calendar = calendar
                     cell.raw_value = value
-                    cell.position = parsed["position"]
-                    cell.attendance_status = parsed["attendance_status"]
-                    cell.work_time_code = parsed["work_time_code"]
-                    cell.memo = "" if parsed["recognized"] else value
+                    cell.position = parsed.position
+                    cell.attendance_status = parsed.attendance_status
+                    cell.work_time_code = parsed.work_time_code
+                    cell.memo = parsed.memo
                     cell.updated_by = actor
                     cell.save()
 
@@ -333,7 +325,7 @@ class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
                         }
                     )
 
-                    if value and not parsed["recognized"]:
+                    if value and not parsed.recognized:
                         unrecognized_values.append(
                             {
                                 "assignment": assignment.id,
@@ -348,28 +340,3 @@ class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
             "unrecognized_values": unrecognized_values,
             "affected_cells": affected_cells,
         }
-
-    def _parse_paste_value(self, value, position_lookup, status_lookup, work_time_lookup):
-        key = self._normalize_lookup_value(value)
-        position = position_lookup.get(key)
-        attendance_status = status_lookup.get(key)
-        work_time_code = work_time_lookup.get(key)
-
-        return {
-            "position": position,
-            "attendance_status": attendance_status,
-            "work_time_code": work_time_code,
-            "recognized": bool(position or attendance_status or work_time_code or not value),
-        }
-
-    def _build_lookup(self, queryset, fields):
-        lookup = {}
-        for obj in queryset:
-            for field in fields:
-                value = getattr(obj, field, "")
-                if value:
-                    lookup[self._normalize_lookup_value(value)] = obj
-        return lookup
-
-    def _normalize_lookup_value(self, value):
-        return str(value or "").strip().casefold()

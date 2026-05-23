@@ -601,6 +601,112 @@ class OperationsCalendarAPITests(TestCase):
         )
         self.assertEqual(codes, ["regular", "overtime"])
 
+    def test_paste_maps_position_with_regular_work_time(self):
+        calendar = self._create_calendar()
+        position = self._create_position()
+        assignment = self._create_assignment(calendar["id"])
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/paste/",
+            {
+                "start_assignment": assignment["id"],
+                "start_date": "2026-05-01",
+                "tsv": "ECII 定時",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        cell = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-01")
+        self.assertEqual(cell.position_id, position["id"])
+        self.assertEqual(cell.work_time_code.code, "regular")
+        self.assertEqual(cell.raw_value, "ECII 定時")
+        self.assertEqual(cell.memo, "")
+
+    def test_paste_maps_position_with_overtime_work_time(self):
+        calendar = self._create_calendar()
+        position = self._create_position()
+        assignment = self._create_assignment(calendar["id"])
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/paste/",
+            {
+                "start_assignment": assignment["id"],
+                "start_date": "2026-05-01",
+                "tsv": "ECII + 残業",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        cell = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-01")
+        self.assertEqual(cell.position_id, position["id"])
+        self.assertEqual(cell.work_time_code.code, "overtime")
+        self.assertEqual(cell.memo, "")
+
+    def test_paste_maps_position_and_keeps_remaining_text_as_memo(self):
+        calendar = self._create_calendar()
+        position = self._create_position()
+        assignment = self._create_assignment(calendar["id"])
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/paste/",
+            {
+                "start_assignment": assignment["id"],
+                "start_date": "2026-05-01",
+                "tsv": "ECII メモ qualquer",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["unrecognized_values"], [])
+        cell = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-01")
+        self.assertEqual(cell.position_id, position["id"])
+        self.assertEqual(cell.raw_value, "ECII メモ qualquer")
+        self.assertEqual(cell.memo, "メモ qualquer")
+
+    def test_paste_maps_position_and_keeps_vaccine_as_memo(self):
+        calendar = self._create_calendar()
+        position = self._create_position()
+        assignment = self._create_assignment(calendar["id"])
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/paste/",
+            {
+                "start_assignment": assignment["id"],
+                "start_date": "2026-05-01",
+                "tsv": "ECII ワクチン",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        cell = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-01")
+        self.assertEqual(cell.position_id, position["id"])
+        self.assertEqual(cell.memo, "ワクチン")
+
+    def test_paste_maps_composite_values_with_different_separators(self):
+        calendar = self._create_calendar()
+        self._create_position()
+        assignment = self._create_assignment(calendar["id"])
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/paste/",
+            {
+                "start_assignment": assignment["id"],
+                "start_date": "2026-05-01",
+                "tsv": 'ECII/定時\tECII・残業\t"ECII\n定時"',
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        cells = list(CalendarDayCell.objects.filter(assignment_id=assignment["id"]).order_by("date"))
+        self.assertEqual([cell.position.code for cell in cells], ["ECII", "ECII", "ECII"])
+        self.assertEqual([cell.work_time_code.code for cell in cells], ["regular", "overtime", "regular"])
+        self.assertEqual(cells[2].raw_value, "ECII\n定時")
+
     def test_paste_unknown_value_saves_raw_value_and_memo(self):
         calendar = self._create_calendar()
         assignment = self._create_assignment(calendar["id"])
