@@ -17,6 +17,8 @@ class UniformCategorySerializer(serializers.ModelSerializer):
             "id",
             "code",
             "name",
+            "label_pt",
+            "label_jp",
             "description",
             "is_active",
             "created_at",

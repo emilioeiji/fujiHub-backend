@@ -1,3 +1,107 @@
 from django.contrib import admin
 
-# Register your models here.
+from .models import (
+    AttendanceStatus,
+    CalendarDayCell,
+    CalendarEmployeeAssignment,
+    CalendarPrintPreset,
+    MonthlyOperationCalendar,
+    OperationalPosition,
+    PositionDailyRequirement,
+    WorkTimeCode,
+)
+
+
+@admin.register(OperationalPosition)
+class OperationalPositionAdmin(admin.ModelAdmin):
+    list_display = ("code", "department", "name_pt", "name_jp", "building_floor", "is_active")
+    list_filter = ("department", "building_floor", "is_active")
+    search_fields = ("code", "name_pt", "name_jp", "description")
+
+
+@admin.register(AttendanceStatus)
+class AttendanceStatusAdmin(admin.ModelAdmin):
+    list_display = (
+        "code",
+        "label_pt",
+        "label_jp",
+        "is_working_day",
+        "is_absence",
+        "is_paid_leave",
+        "is_active",
+    )
+    list_filter = ("is_working_day", "is_absence", "is_paid_leave", "is_active")
+    search_fields = ("code", "label_pt", "label_jp")
+
+
+@admin.register(WorkTimeCode)
+class WorkTimeCodeAdmin(admin.ModelAdmin):
+    list_display = ("code", "label_pt", "label_jp", "affects_overtime", "is_active")
+    list_filter = ("affects_overtime", "is_active")
+    search_fields = ("code", "label_pt", "label_jp")
+
+
+class CalendarEmployeeAssignmentInline(admin.TabularInline):
+    model = CalendarEmployeeAssignment
+    extra = 0
+
+
+class PositionDailyRequirementInline(admin.TabularInline):
+    model = PositionDailyRequirement
+    extra = 0
+
+
+class CalendarPrintPresetInline(admin.TabularInline):
+    model = CalendarPrintPreset
+    extra = 0
+
+
+@admin.register(MonthlyOperationCalendar)
+class MonthlyOperationCalendarAdmin(admin.ModelAdmin):
+    list_display = ("title", "department", "process", "shift", "year", "month", "status", "is_active")
+    list_filter = ("status", "department", "process", "shift", "year", "month", "is_active")
+    search_fields = ("title", "department__code", "department__label_pt", "department__label_jp")
+    inlines = [CalendarEmployeeAssignmentInline, PositionDailyRequirementInline, CalendarPrintPresetInline]
+
+
+@admin.register(CalendarEmployeeAssignment)
+class CalendarEmployeeAssignmentAdmin(admin.ModelAdmin):
+    list_display = (
+        "calendar",
+        "employee",
+        "operational_category",
+        "start_date",
+        "end_date",
+        "display_order",
+        "is_active",
+    )
+    list_filter = ("operational_category", "calendar", "start_date", "is_active")
+    search_fields = ("employee__employee_id", "employee__name_en", "employee__name_jp", "notes")
+
+
+@admin.register(CalendarDayCell)
+class CalendarDayCellAdmin(admin.ModelAdmin):
+    list_display = (
+        "calendar",
+        "assignment",
+        "date",
+        "position",
+        "attendance_status",
+        "work_time_code",
+        "overtime_minutes",
+    )
+    list_filter = ("calendar", "date", "position", "attendance_status", "work_time_code")
+    search_fields = ("assignment__employee__employee_id", "raw_value", "memo")
+
+
+@admin.register(PositionDailyRequirement)
+class PositionDailyRequirementAdmin(admin.ModelAdmin):
+    list_display = ("calendar", "position", "date", "required_headcount")
+    list_filter = ("calendar", "position", "date")
+    search_fields = ("position__code", "position__name_pt", "position__name_jp", "notes")
+
+
+@admin.register(CalendarPrintPreset)
+class CalendarPrintPresetAdmin(admin.ModelAdmin):
+    list_display = ("calendar", "paper_size", "orientation", "scale_percent", "show_colors", "is_active")
+    list_filter = ("paper_size", "orientation", "show_colors", "is_active")

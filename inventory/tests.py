@@ -38,7 +38,7 @@ class UniformWorkflowServiceTests(TestCase):
         )
         self.category, _ = UniformCategory.objects.get_or_create(
             code="shirt",
-            defaults={"name": "Camiseta"},
+            defaults={"name": "Camiseta", "label_pt": "Camiseta", "label_jp": "Tシャツ"},
         )
         self.item = UniformItem.objects.create(
             sku="UNI-SHIRT-M-WHITE",
@@ -202,15 +202,15 @@ class InventoryAPITests(TestCase):
         )
         self.category, _ = UniformCategory.objects.get_or_create(
             code="pants",
-            defaults={"name": "Calca"},
+            defaults={"name": "Calca", "label_pt": "Calca", "label_jp": "ズボン"},
         )
         self.cap_category, _ = UniformCategory.objects.get_or_create(
             code="cap",
-            defaults={"name": "Bone"},
+            defaults={"name": "Bone", "label_pt": "Bone", "label_jp": "帽子"},
         )
         self.other_category, _ = UniformCategory.objects.get_or_create(
             code="other",
-            defaults={"name": "Outros"},
+            defaults={"name": "Outros", "label_pt": "Outros", "label_jp": "その他"},
         )
         self.item = UniformItem.objects.create(
             sku="UNI-PANTS-L-BLACK",
@@ -231,6 +231,8 @@ class InventoryAPITests(TestCase):
         self.assertEqual(results[0]["sku"], self.item.sku)
         self.assertEqual(results[0]["category"], self.category.pk)
         self.assertEqual(results[0]["category_detail"]["name"], self.category.name)
+        self.assertEqual(results[0]["category_detail"]["label_pt"], self.category.label_pt)
+        self.assertEqual(results[0]["category_detail"]["label_jp"], self.category.label_jp)
         self.assertEqual(results[0]["stock_quantity"], 8)
 
     def test_list_categories(self):
@@ -239,18 +241,24 @@ class InventoryAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         results = self._results(response)
         self.assertEqual(results[0]["code"], self.cap_category.code)
+        self.assertIn("label_pt", results[0])
+        self.assertIn("label_jp", results[0])
 
     def test_create_category(self):
         payload = {
             "code": "gloves",
             "name": "Luvas",
+            "label_pt": "Luvas",
+            "label_jp": "手袋",
             "description": "Categoria criada pela API",
         }
 
         response = self.client.post("/api/inventory/categories/", payload, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertTrue(UniformCategory.objects.filter(code="gloves").exists())
+        category = UniformCategory.objects.get(code="gloves")
+        self.assertEqual(category.label_pt, "Luvas")
+        self.assertEqual(category.label_jp, "手袋")
 
     def test_create_item(self):
         payload = {

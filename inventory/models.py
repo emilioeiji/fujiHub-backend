@@ -9,15 +9,17 @@ from common.models import BaseModel
 class UniformCategory(BaseModel):
     code = models.SlugField(max_length=50, unique=True)
     name = models.CharField(max_length=100)
+    label_pt = models.CharField(max_length=100, blank=True)
+    label_jp = models.CharField(max_length=100, blank=True)
     description = models.TextField(blank=True)
 
     class Meta:
-        ordering = ["name"]
+        ordering = ["label_pt", "name"]
         verbose_name = "Uniform category"
         verbose_name_plural = "Uniform categories"
 
     def __str__(self):
-        return self.name
+        return self.label_pt or self.name
 
 
 class UniformItem(BaseModel):

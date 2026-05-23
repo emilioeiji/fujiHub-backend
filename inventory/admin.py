@@ -24,9 +24,9 @@ class UniformRequestEventInline(admin.TabularInline):
 
 @admin.register(UniformCategory)
 class UniformCategoryAdmin(admin.ModelAdmin):
-    list_display = ("code", "name", "is_active")
+    list_display = ("code", "name", "label_pt", "label_jp", "is_active")
     list_filter = ("is_active",)
-    search_fields = ("code", "name", "description")
+    search_fields = ("code", "name", "label_pt", "label_jp", "description")
 
 
 @admin.register(UniformItem)
