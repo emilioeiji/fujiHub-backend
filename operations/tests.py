@@ -1,9 +1,13 @@
 from datetime import date
 
 from django.core.exceptions import ValidationError
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.test import TestCase
+from rest_framework import status
+from rest_framework.test import APIClient
 
+from accounts.models import Role, UserProfile
 from master.models import BuildingFloor, Department, Employee, Process, Shift
 
 from .models import (
@@ -240,3 +244,459 @@ class OperationsCalendarModelTests(TestCase):
                 date=date(2026, 5, 1),
                 required_headcount=21,
             )
+
+
+class OperationsCalendarAPITests(TestCase):
+    def setUp(self):
+        self.department = Department.objects.create(
+            code="54532",
+            label_pt="Departamento 54532",
+            label_jp="部署 54532",
+        )
+        self.process = Process.objects.create(
+            code="P1",
+            label_pt="Processo 1",
+            label_jp="工程 1",
+        )
+        self.shift = Shift.objects.create(
+            code="D",
+            label_pt="Dia",
+            label_jp="日勤",
+        )
+        self.building_floor = BuildingFloor.objects.create(
+            code="E2-4F",
+            label_pt="E2 4F",
+            label_jp="E2棟4F",
+        )
+        self.employee = Employee.objects.create(
+            employee_id="EMP-OPS-API-001",
+            name_jp="佐藤花子",
+            name_en="Hanako Sato",
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+            building_floor=self.building_floor,
+        )
+        self.second_employee = Employee.objects.create(
+            employee_id="EMP-OPS-API-002",
+            name_jp="鈴木一郎",
+            name_en="Ichiro Suzuki",
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+            building_floor=self.building_floor,
+        )
+        self.admin_user = self._create_user_with_role("ops-admin", "admin")
+        self.supervisor_user = self._create_user_with_role("ops-supervisor", "supervisor")
+        self.consulta_user = self._create_user_with_role("ops-consulta", "consulta")
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin_user)
+
+    def _create_user_with_role(self, username, role_code):
+        role, _ = Role.objects.get_or_create(
+            code=role_code,
+            defaults={"name": role_code.title(), "is_active": True},
+        )
+        user = get_user_model().objects.create_user(username=username, password="password")
+        UserProfile.objects.create(user=user, role=role, department=self.department)
+        return user
+
+    def _create_calendar(self):
+        response = self.client.post(
+            "/api/operations/calendars/",
+            {
+                "department": self.department.pk,
+                "process": self.process.pk,
+                "shift": self.shift.pk,
+                "year": 2026,
+                "month": 5,
+                "title": "54532 - Maio 2026",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        return response.data
+
+    def _create_position(self):
+        response = self.client.post(
+            "/api/operations/positions/",
+            {
+                "department": self.department.pk,
+                "code": "ECII",
+                "name_pt": "ECII",
+                "name_jp": "ECII",
+                "building_floor": self.building_floor.pk,
+                "description": "ECII E2 4F",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        return response.data
+
+    def _create_assignment(self, calendar_id):
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar_id}/assignments/",
+            {
+                "employee": self.employee.pk,
+                "operational_category": "normal",
+                "start_date": "2026-05-01",
+                "display_order": 1,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        return response.data
+
+    def _create_second_assignment(self, calendar_id):
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar_id}/assignments/",
+            {
+                "employee": self.second_employee.pk,
+                "operational_category": "normal",
+                "start_date": "2026-05-01",
+                "display_order": 2,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        return response.data
+
+    def test_create_calendar(self):
+        response_data = self._create_calendar()
+
+        self.assertEqual(response_data["department"], self.department.pk)
+        self.assertEqual(response_data["status"], "draft")
+
+    def test_create_calendar_blocks_logical_duplicate(self):
+        self._create_calendar()
+
+        response = self.client.post(
+            "/api/operations/calendars/",
+            {
+                "department": self.department.pk,
+                "process": self.process.pk,
+                "shift": self.shift.pk,
+                "year": 2026,
+                "month": 5,
+                "title": "Duplicado",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_create_position(self):
+        response_data = self._create_position()
+
+        self.assertEqual(response_data["code"], "ECII")
+        self.assertEqual(response_data["department"], self.department.pk)
+
+    def test_create_assignment(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"])
+
+        self.assertEqual(assignment["employee"], self.employee.pk)
+        self.assertEqual(assignment["calendar"], calendar["id"])
+
+    def test_create_cell(self):
+        calendar = self._create_calendar()
+        position = self._create_position()
+        assignment = self._create_assignment(calendar["id"])
+        work_status = AttendanceStatus.objects.get(code="work")
+        regular = WorkTimeCode.objects.get(code="regular")
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-01",
+                "position": position["id"],
+                "attendance_status": work_status.pk,
+                "work_time_code": regular.pk,
+                "raw_value": "ECII E2棟4F",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["position"], position["id"])
+
+    def test_update_cell(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"])
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {"assignment": assignment["id"], "date": "2026-05-01", "raw_value": "休"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        patch_response = self.client.patch(
+            f"/api/operations/calendars/{calendar['id']}/cells/{response.data['id']}/",
+            {"memo": "Ajustado"},
+            format="json",
+        )
+
+        self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_response.data["memo"], "Ajustado")
+
+    def test_create_requirement(self):
+        calendar = self._create_calendar()
+        position = self._create_position()
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/requirements/",
+            {
+                "position": position["id"],
+                "date": "2026-05-01",
+                "required_headcount": 20,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["required_headcount"], 20)
+
+    def test_update_requirement(self):
+        calendar = self._create_calendar()
+        position = self._create_position()
+        create_response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/requirements/",
+            {
+                "position": position["id"],
+                "date": "2026-05-01",
+                "required_headcount": 20,
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+
+        update_response = self.client.patch(
+            f"/api/operations/calendars/{calendar['id']}/requirements/{create_response.data['id']}/",
+            {"required_headcount": 22, "notes": "Ajuste diario"},
+            format="json",
+        )
+
+        self.assertEqual(update_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(update_response.data["required_headcount"], 22)
+
+    def test_summary_returns_required_assigned_and_difference(self):
+        calendar = self._create_calendar()
+        position = self._create_position()
+        assignment = self._create_assignment(calendar["id"])
+        work_status = AttendanceStatus.objects.get(code="work")
+
+        self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/requirements/",
+            {
+                "position": position["id"],
+                "date": "2026-05-01",
+                "required_headcount": 2,
+            },
+            format="json",
+        )
+        self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-01",
+                "position": position["id"],
+                "attendance_status": work_status.pk,
+            },
+            format="json",
+        )
+
+        response = self.client.get(f"/api/operations/calendars/{calendar['id']}/summary/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(response.data[0]["requirement_id"])
+        self.assertEqual(response.data[0]["required_headcount"], 2)
+        self.assertEqual(response.data[0]["assigned_headcount"], 1)
+        self.assertEqual(response.data[0]["difference"], -1)
+
+    def test_paste_cells_simple_2x2(self):
+        calendar = self._create_calendar()
+        position = self._create_position()
+        first_assignment = self._create_assignment(calendar["id"])
+        second_assignment = self._create_second_assignment(calendar["id"])
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/paste/",
+            {
+                "start_assignment": first_assignment["id"],
+                "start_date": "2026-05-01",
+                "tsv": f"{position['code']}\t休\n片栗粉\t欠",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["created"], 4)
+        self.assertEqual(CalendarDayCell.objects.count(), 4)
+        self.assertEqual(
+            CalendarDayCell.objects.get(assignment_id=second_assignment["id"], date="2026-05-02").raw_value,
+            "欠",
+        )
+
+    def test_paste_maps_position(self):
+        calendar = self._create_calendar()
+        position = self._create_position()
+        assignment = self._create_assignment(calendar["id"])
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/paste/",
+            {
+                "start_assignment": assignment["id"],
+                "start_date": "2026-05-01",
+                "tsv": position["code"],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        cell = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-01")
+        self.assertEqual(cell.position_id, position["id"])
+
+    def test_paste_maps_attendance_statuses(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"])
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/paste/",
+            {
+                "start_assignment": assignment["id"],
+                "start_date": "2026-05-01",
+                "tsv": "休\t有休\t欠勤",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        statuses = list(
+            CalendarDayCell.objects.filter(assignment_id=assignment["id"])
+            .order_by("date")
+            .values_list("attendance_status__code", flat=True)
+        )
+        self.assertEqual(statuses, ["off", "paid_leave", "absence"])
+
+    def test_paste_maps_work_time_codes(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"])
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/paste/",
+            {
+                "start_assignment": assignment["id"],
+                "start_date": "2026-05-01",
+                "tsv": "定時\t残業",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        codes = list(
+            CalendarDayCell.objects.filter(assignment_id=assignment["id"])
+            .order_by("date")
+            .values_list("work_time_code__code", flat=True)
+        )
+        self.assertEqual(codes, ["regular", "overtime"])
+
+    def test_paste_unknown_value_saves_raw_value_and_memo(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"])
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/paste/",
+            {
+                "start_assignment": assignment["id"],
+                "start_date": "2026-05-01",
+                "tsv": "valor livre",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["unrecognized_values"]), 1)
+        cell = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-01")
+        self.assertEqual(cell.raw_value, "valor livre")
+        self.assertEqual(cell.memo, "valor livre")
+
+    def test_paste_does_not_exceed_assignments_or_calendar_month(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"])
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/paste/",
+            {
+                "start_assignment": assignment["id"],
+                "start_date": "2026-05-31",
+                "tsv": "休\t有休\n欠勤\t定時",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["created"], 1)
+        self.assertEqual(CalendarDayCell.objects.count(), 1)
+
+    def test_paste_write_permission_is_required(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"])
+        self.client.force_authenticate(self.consulta_user)
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/paste/",
+            {
+                "start_assignment": assignment["id"],
+                "start_date": "2026-05-01",
+                "tsv": "休",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_permissions_for_master_data_and_calendar_writes(self):
+        self.client.force_authenticate(self.supervisor_user)
+        position_response = self.client.post(
+            "/api/operations/positions/",
+            {
+                "department": self.department.pk,
+                "code": "NG",
+                "name_pt": "Sem permissao",
+                "name_jp": "権限なし",
+            },
+            format="json",
+        )
+        calendar_response = self.client.post(
+            "/api/operations/calendars/",
+            {
+                "department": self.department.pk,
+                "year": 2026,
+                "month": 6,
+                "title": "Supervisor pode criar calendario",
+            },
+            format="json",
+        )
+
+        self.assertEqual(position_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(calendar_response.status_code, status.HTTP_201_CREATED)
+
+    def test_authenticated_read_and_consulta_write_denied(self):
+        self._create_position()
+        self.client.force_authenticate(self.consulta_user)
+
+        read_response = self.client.get("/api/operations/positions/")
+        write_response = self.client.post(
+            "/api/operations/calendars/",
+            {
+                "department": self.department.pk,
+                "year": 2026,
+                "month": 7,
+                "title": "Consulta nao pode escrever",
+            },
+            format="json",
+        )
+
+        self.assertEqual(read_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(write_response.status_code, status.HTTP_403_FORBIDDEN)
