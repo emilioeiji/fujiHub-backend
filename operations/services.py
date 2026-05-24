@@ -8,7 +8,14 @@ from django.db.models import Max
 
 from master.models import Employee
 
-from .models import AttendanceStatus, CalendarDayCell, CalendarEmployeeAssignment, OperationalPosition, WorkTimeCode
+from .models import (
+    AttendanceStatus,
+    CalendarDayCell,
+    CalendarEmployeeAssignment,
+    OperationalCode,
+    OperationalPosition,
+    WorkTimeCode,
+)
 
 
 PASTE_TOKEN_SEPARATOR_RE = re.compile(r"[\s+/・]+")
@@ -22,6 +29,7 @@ class ParsedCalendarCellValue:
     position: OperationalPosition | None = None
     attendance_status: AttendanceStatus | None = None
     work_time_code: WorkTimeCode | None = None
+    operational_code: OperationalCode | None = None
     memo: str = ""
     recognized: bool = False
 
@@ -88,12 +96,14 @@ def generate_calendar_schedule(calendar, user, overwrite=False, default_4x2_anch
                     cell.position = None
                     cell.attendance_status = off_status
                     cell.work_time_code = None
+                    cell.operational_code = None
                     cell.raw_value = "休"
                 else:
                     position = assignment.default_position or last_position
                     cell.position = position
                     cell.attendance_status = work_status
                     cell.work_time_code = regular_work_time
+                    cell.operational_code = None
                     cell.raw_value = position.code if position else ""
                     if position:
                         last_position = position
@@ -264,6 +274,10 @@ def build_calendar_cell_parser_context(calendar):
             WorkTimeCode.objects.filter(is_active=True),
             fields=("code", "label_pt", "label_jp"),
         ),
+        "operational_codes": _build_lookup(
+            OperationalCode.objects.filter(is_active=True),
+            fields=("code", "label_pt", "label_jp"),
+        ),
     }
 
 
@@ -275,7 +289,19 @@ def parse_calendar_cell_value(value, context):
     exact_key = _normalize_lookup_value(raw_value)
     exact_match = _match_token(exact_key, context)
     if exact_match:
-        return ParsedCalendarCellValue(**exact_match, recognized=True)
+        operational_code = exact_match.get("operational_code")
+        attendance_status = exact_match.get("attendance_status")
+        work_time_code = exact_match.get("work_time_code")
+        if operational_code:
+            attendance_status = attendance_status or operational_code.attendance_status
+            work_time_code = work_time_code or operational_code.work_time_code
+        return ParsedCalendarCellValue(
+            position=exact_match.get("position"),
+            attendance_status=attendance_status,
+            work_time_code=work_time_code,
+            operational_code=operational_code,
+            recognized=True,
+        )
 
     parsed = ParsedCalendarCellValue()
     memo_tokens = []
@@ -283,6 +309,13 @@ def parse_calendar_cell_value(value, context):
         key = _normalize_lookup_value(token)
         match = _match_token(key, context)
         if match:
+            if match["operational_code"] and parsed.operational_code is None:
+                parsed.operational_code = match["operational_code"]
+                if parsed.attendance_status is None and match["operational_code"].attendance_status:
+                    parsed.attendance_status = match["operational_code"].attendance_status
+                if parsed.work_time_code is None and match["operational_code"].work_time_code:
+                    parsed.work_time_code = match["operational_code"].work_time_code
+                continue
             if match["position"] and parsed.position is None:
                 parsed.position = match["position"]
                 continue
@@ -296,7 +329,7 @@ def parse_calendar_cell_value(value, context):
         memo_tokens.append(token)
 
     parsed.memo = " ".join(memo_tokens).strip()
-    parsed.recognized = bool(parsed.position or parsed.attendance_status or parsed.work_time_code)
+    parsed.recognized = bool(parsed.position or parsed.attendance_status or parsed.work_time_code or parsed.operational_code)
     if not parsed.recognized:
         parsed.memo = raw_value
 
@@ -304,13 +337,15 @@ def parse_calendar_cell_value(value, context):
 
 
 def _match_token(key, context):
+    operational_code = context["operational_codes"].get(key)
     position = context["positions"].get(key)
     attendance_status = context["attendance_statuses"].get(key)
     work_time_code = context["work_time_codes"].get(key)
-    if not position and not attendance_status and not work_time_code:
+    if not position and not attendance_status and not work_time_code and not operational_code:
         return None
 
     return {
+        "operational_code": operational_code,
         "position": position,
         "attendance_status": attendance_status,
         "work_time_code": work_time_code,

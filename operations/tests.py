@@ -15,9 +15,12 @@ from .models import (
     CalendarDayCell,
     CalendarEmployeeAssignment,
     CalendarPrintPreset,
+    EmployeeVisualCategory,
     MonthlyOperationCalendar,
+    OperationalCode,
     OperationalPosition,
     PositionDailyRequirement,
+    RotationGroupStyle,
     WorkTimeCode,
 )
 
@@ -106,6 +109,30 @@ class OperationsCalendarModelTests(TestCase):
         self.assertTrue(expected_codes.issubset(set(WorkTimeCode.objects.values_list("code", flat=True))))
         self.assertFalse(WorkTimeCode.objects.get(code="regular").affects_overtime)
         self.assertTrue(WorkTimeCode.objects.get(code="overtime").affects_overtime)
+
+    def test_initial_rotation_group_style_seeds_are_created(self):
+        expected = {"A", "B", "C"}
+        self.assertTrue(expected.issubset(set(RotationGroupStyle.objects.values_list("group_code", flat=True))))
+
+    def test_initial_employee_visual_category_seeds_are_created(self):
+        expected = {"normal", "relief", "koutei_leader", "trainer", "retired", "trainee"}
+        self.assertTrue(expected.issubset(set(EmployeeVisualCategory.objects.values_list("code", flat=True))))
+
+    def test_initial_operational_code_seeds_are_created(self):
+        expected = {
+            "normal",
+            "teiji",
+            "soutai",
+            "chikoku",
+            "sunday",
+            "sunday_teiji",
+            "holiday_work",
+            "holiday_work_teiji",
+            "checkman",
+            "checkman_teiji",
+            "vaccine",
+        }
+        self.assertTrue(expected.issubset(set(OperationalCode.objects.values_list("code", flat=True))))
 
     def test_create_operational_position(self):
         position = self._create_position()
@@ -437,6 +464,30 @@ class OperationsCalendarAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["position"], position["id"])
 
+    def test_get_cells_regression_returns_200_with_operational_code(self):
+        calendar = self._create_calendar()
+        position = self._create_position()
+        assignment = self._create_assignment(calendar["id"])
+        code = OperationalCode.objects.get(code="teiji")
+        work_status = AttendanceStatus.objects.get(code="work")
+        regular = WorkTimeCode.objects.get(code="regular")
+        CalendarDayCell.objects.create(
+            calendar_id=calendar["id"],
+            assignment_id=assignment["id"],
+            date=date(2026, 5, 1),
+            position_id=position["id"],
+            attendance_status=work_status,
+            work_time_code=regular,
+            operational_code=code,
+            raw_value="定時",
+        )
+
+        response = self.client.get(f"/api/operations/calendars/{calendar['id']}/cells/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["operational_code_detail"]["code"], "teiji")
+
     def test_update_cell(self):
         calendar = self._create_calendar()
         assignment = self._create_assignment(calendar["id"])
@@ -617,6 +668,27 @@ class OperationsCalendarAPITests(TestCase):
         )
         self.assertEqual(codes, ["regular", "overtime"])
 
+    def test_paste_maps_operational_codes_and_derived_fields(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"])
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/paste/",
+            {
+                "start_assignment": assignment["id"],
+                "start_date": "2026-05-01",
+                "tsv": "teiji\t日曜\t休日出勤\t早退\t遅刻",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        cells = list(CalendarDayCell.objects.filter(assignment_id=assignment["id"]).order_by("date"))
+        self.assertEqual([cell.operational_code.code for cell in cells], ["teiji", "sunday", "holiday_work", "soutai", "chikoku"])
+        self.assertEqual(cells[0].work_time_code.code, "regular")
+        self.assertEqual(cells[1].attendance_status.code, "off")
+        self.assertEqual(cells[2].work_time_code.code, "holiday_work")
+
     def test_paste_maps_position_with_regular_work_time(self):
         calendar = self._create_calendar()
         position = self._create_position()
@@ -700,7 +772,8 @@ class OperationsCalendarAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         cell = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-01")
         self.assertEqual(cell.position_id, position["id"])
-        self.assertEqual(cell.memo, "ワクチン")
+        self.assertEqual(cell.operational_code.code, "vaccine")
+        self.assertEqual(cell.memo, "")
 
     def test_paste_maps_composite_values_with_different_separators(self):
         calendar = self._create_calendar()
