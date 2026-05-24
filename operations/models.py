@@ -68,6 +68,84 @@ class WorkTimeCode(BaseModel):
         return self.code
 
 
+class RotationGroupStyle(BaseModel):
+    group_code = models.CharField(max_length=1, unique=True)
+    label = models.CharField(max_length=50)
+    background_color = models.CharField(max_length=20, blank=True)
+    text_color = models.CharField(max_length=20, blank=True)
+    display_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["display_order", "group_code"]
+
+    def __str__(self):
+        return self.group_code
+
+
+class EmployeeVisualCategory(BaseModel):
+    class TargetColumn(models.TextChoices):
+        NAME = "name", "Name"
+        KANA = "kana", "Kana"
+        CODE = "code", "Code"
+        ROW = "row", "Row"
+
+    class PrintBehavior(models.TextChoices):
+        SHOW = "show", "Show"
+        SUPPRESS_ON_PRINT = "suppress_on_print", "Suppress on print"
+
+    code = models.SlugField(max_length=50, unique=True)
+    label_pt = models.CharField(max_length=100)
+    label_jp = models.CharField(max_length=100)
+    target_column = models.CharField(max_length=20, choices=TargetColumn.choices)
+    background_color = models.CharField(max_length=20, blank=True)
+    text_color = models.CharField(max_length=20, blank=True)
+    print_behavior = models.CharField(
+        max_length=30,
+        choices=PrintBehavior.choices,
+        default=PrintBehavior.SHOW,
+    )
+    display_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["display_order", "code"]
+        verbose_name = "Employee visual category"
+        verbose_name_plural = "Employee visual categories"
+
+    def __str__(self):
+        return self.code
+
+
+class OperationalCode(BaseModel):
+    code = models.SlugField(max_length=50, unique=True)
+    label_pt = models.CharField(max_length=100)
+    label_jp = models.CharField(max_length=100)
+    category = models.CharField(max_length=50, blank=True)
+    attendance_status = models.ForeignKey(
+        AttendanceStatus,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="operational_codes",
+    )
+    work_time_code = models.ForeignKey(
+        WorkTimeCode,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="operational_codes",
+    )
+    background_color = models.CharField(max_length=20, blank=True)
+    text_color = models.CharField(max_length=20, blank=True)
+    affects_overtime = models.BooleanField(default=False)
+    affects_holiday_work = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["category", "code"]
+
+    def __str__(self):
+        return self.code
+
+
 class MonthlyOperationCalendar(BaseModel):
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
@@ -271,6 +349,13 @@ class CalendarDayCell(BaseModel):
     )
     work_time_code = models.ForeignKey(
         WorkTimeCode,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="day_cells",
+    )
+    operational_code = models.ForeignKey(
+        OperationalCode,
         on_delete=models.SET_NULL,
         blank=True,
         null=True,

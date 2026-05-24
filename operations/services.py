@@ -4,13 +4,17 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from django.db import transaction
+from django.db.models import Max
 
-from .models import AttendanceStatus, CalendarDayCell, OperationalPosition, WorkTimeCode
+from master.models import Employee
+
+from .models import AttendanceStatus, CalendarDayCell, CalendarEmployeeAssignment, OperationalPosition, WorkTimeCode
 
 
 PASTE_TOKEN_SEPARATOR_RE = re.compile(r"[\s+/・]+")
 FOUR_TWO_GROUP_OFFSETS = {"A": 0, "B": 2, "C": 4}
 DEFAULT_FIVE_TWO_OFF_DAYS = [5, 6]
+FIVE_TWO_KEYWORDS = {"supervisor", "manager", "staff", "管理", "スタッフ"}
 
 
 @dataclass
@@ -106,6 +110,119 @@ def generate_calendar_schedule(calendar, user, overwrite=False, default_4x2_anch
                 current_date += timedelta(days=1)
 
     return result
+
+
+def import_calendar_employees(calendar, user, import_all=False, employee_ids=None):
+    month_start = date(calendar.year, calendar.month, 1)
+    employee_ids = employee_ids or []
+    existing_employee_ids = set(calendar.assignments.values_list("employee_id", flat=True))
+
+    candidates = _calendar_employee_candidates(calendar, import_all=import_all, employee_ids=employee_ids)
+    display_order = calendar.assignments.aggregate(max_order=Max("display_order"))["max_order"] or 0
+    result = {
+        "created": 0,
+        "skipped": 0,
+        "total_candidates": candidates.count(),
+        "assignments": [],
+    }
+
+    with transaction.atomic():
+        for employee in candidates:
+            if employee.employee_id in existing_employee_ids:
+                result["skipped"] += 1
+                continue
+
+            display_order += 1
+            assignment = CalendarEmployeeAssignment.objects.create(
+                calendar=calendar,
+                employee=employee,
+                operational_category=_infer_operational_category(employee),
+                work_pattern=_infer_work_pattern(employee),
+                rotation_group="A",
+                five_two_off_days=DEFAULT_FIVE_TWO_OFF_DAYS.copy(),
+                default_position=_infer_default_position(calendar, employee),
+                start_date=month_start,
+                display_order=display_order,
+                created_by=user,
+                updated_by=user,
+            )
+            existing_employee_ids.add(employee.employee_id)
+            result["created"] += 1
+            result["assignments"].append(assignment.id)
+
+    return result
+
+
+def _calendar_employee_candidates(calendar, import_all=False, employee_ids=None):
+    queryset = Employee.objects.filter(
+        department=calendar.department,
+        active_end_month=True,
+        retired__isnull=True,
+        end_work__isnull=True,
+    ).select_related("process", "building_floor", "hire_type", "entry_type")
+
+    if import_all:
+        return queryset.order_by("employee_id")
+
+    return queryset.filter(employee_id__in=employee_ids or []).order_by("employee_id")
+
+
+def _infer_work_pattern(employee):
+    return (
+        CalendarEmployeeAssignment.WorkPattern.FIVE_TWO
+        if employee.manager_flag or _employee_has_any_keyword(employee, FIVE_TWO_KEYWORDS)
+        else CalendarEmployeeAssignment.WorkPattern.FOUR_TWO
+    )
+
+
+def _infer_operational_category(employee):
+    if employee.manager_flag or _employee_has_any_keyword(employee, {"manager"}):
+        return CalendarEmployeeAssignment.OperationalCategory.MANAGER
+    if _employee_has_any_keyword(employee, {"supervisor"}):
+        return CalendarEmployeeAssignment.OperationalCategory.SUPERVISOR
+    if _employee_has_any_keyword(employee, {"gl"}):
+        return CalendarEmployeeAssignment.OperationalCategory.GL
+    return CalendarEmployeeAssignment.OperationalCategory.NORMAL
+
+
+def _employee_has_any_keyword(employee, keywords):
+    haystack = " ".join(
+        str(value or "")
+        for value in [
+            employee.contract_type,
+            employee.rank,
+            employee.notes,
+            getattr(employee.hire_type, "code", ""),
+            getattr(employee.hire_type, "label_pt", ""),
+            getattr(employee.hire_type, "label_jp", ""),
+            getattr(employee.entry_type, "code", ""),
+            getattr(employee.entry_type, "label_pt", ""),
+            getattr(employee.entry_type, "label_jp", ""),
+        ]
+    ).casefold()
+    return any(keyword.casefold() in haystack for keyword in keywords)
+
+
+def _infer_default_position(calendar, employee):
+    queryset = OperationalPosition.objects.filter(department=calendar.department, is_active=True)
+
+    if employee.building_floor_id:
+        floor_positions = list(queryset.filter(building_floor=employee.building_floor).order_by("code"))
+        if len(floor_positions) == 1:
+            return floor_positions[0]
+
+    if employee.process:
+        process_terms = {
+            employee.process.code,
+            employee.process.label_pt,
+            employee.process.label_jp,
+        }
+        for position in queryset.order_by("code"):
+            searchable = f"{position.code} {position.name_pt} {position.name_jp}".casefold()
+            if any(term and term.casefold() in searchable for term in process_terms):
+                return position
+
+    return None
 
 
 def _is_off_day(assignment, current_date, anchor_date):

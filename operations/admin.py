@@ -5,9 +5,12 @@ from .models import (
     CalendarDayCell,
     CalendarEmployeeAssignment,
     CalendarPrintPreset,
+    EmployeeVisualCategory,
     MonthlyOperationCalendar,
+    OperationalCode,
     OperationalPosition,
     PositionDailyRequirement,
+    RotationGroupStyle,
     WorkTimeCode,
 )
 
@@ -38,6 +41,46 @@ class AttendanceStatusAdmin(admin.ModelAdmin):
 class WorkTimeCodeAdmin(admin.ModelAdmin):
     list_display = ("code", "label_pt", "label_jp", "affects_overtime", "is_active")
     list_filter = ("affects_overtime", "is_active")
+    search_fields = ("code", "label_pt", "label_jp")
+
+
+@admin.register(RotationGroupStyle)
+class RotationGroupStyleAdmin(admin.ModelAdmin):
+    list_display = ("group_code", "label", "background_color", "text_color", "display_order", "is_active")
+    list_filter = ("is_active",)
+    search_fields = ("group_code", "label")
+
+
+@admin.register(EmployeeVisualCategory)
+class EmployeeVisualCategoryAdmin(admin.ModelAdmin):
+    list_display = (
+        "code",
+        "label_pt",
+        "label_jp",
+        "target_column",
+        "background_color",
+        "print_behavior",
+        "display_order",
+        "is_active",
+    )
+    list_filter = ("target_column", "print_behavior", "is_active")
+    search_fields = ("code", "label_pt", "label_jp")
+
+
+@admin.register(OperationalCode)
+class OperationalCodeAdmin(admin.ModelAdmin):
+    list_display = (
+        "code",
+        "label_pt",
+        "label_jp",
+        "category",
+        "attendance_status",
+        "work_time_code",
+        "affects_overtime",
+        "affects_holiday_work",
+        "is_active",
+    )
+    list_filter = ("category", "affects_overtime", "affects_holiday_work", "is_active")
     search_fields = ("code", "label_pt", "label_jp")
 
 
@@ -103,9 +146,10 @@ class CalendarDayCellAdmin(admin.ModelAdmin):
         "position",
         "attendance_status",
         "work_time_code",
+        "operational_code",
         "overtime_minutes",
     )
-    list_filter = ("calendar", "date", "position", "attendance_status", "work_time_code")
+    list_filter = ("calendar", "date", "position", "attendance_status", "work_time_code", "operational_code")
     search_fields = ("assignment__employee__employee_id", "raw_value", "memo")
 
 

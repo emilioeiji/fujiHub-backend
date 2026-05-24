@@ -8,9 +8,12 @@ from .models import (
     CalendarDayCell,
     CalendarEmployeeAssignment,
     CalendarPrintPreset,
+    EmployeeVisualCategory,
     MonthlyOperationCalendar,
+    OperationalCode,
     OperationalPosition,
     PositionDailyRequirement,
+    RotationGroupStyle,
     WorkTimeCode,
 )
 
@@ -70,6 +73,70 @@ class WorkTimeCodeSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class RotationGroupStyleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RotationGroupStyle
+        fields = [
+            "id",
+            "group_code",
+            "label",
+            "background_color",
+            "text_color",
+            "display_order",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class EmployeeVisualCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EmployeeVisualCategory
+        fields = [
+            "id",
+            "code",
+            "label_pt",
+            "label_jp",
+            "target_column",
+            "background_color",
+            "text_color",
+            "print_behavior",
+            "display_order",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class OperationalCodeSerializer(serializers.ModelSerializer):
+    attendance_status_detail = AttendanceStatusSerializer(source="attendance_status", read_only=True)
+    work_time_code_detail = WorkTimeCodeSerializer(source="work_time_code", read_only=True)
+
+    class Meta:
+        model = OperationalCode
+        fields = [
+            "id",
+            "code",
+            "label_pt",
+            "label_jp",
+            "category",
+            "attendance_status",
+            "attendance_status_detail",
+            "work_time_code",
+            "work_time_code_detail",
+            "background_color",
+            "text_color",
+            "affects_overtime",
+            "affects_holiday_work",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "attendance_status_detail", "work_time_code_detail", "created_at", "updated_at"]
 
 
 class MonthlyOperationCalendarSerializer(serializers.ModelSerializer):
@@ -148,6 +215,7 @@ class CalendarDayCellSerializer(serializers.ModelSerializer):
     position_detail = OperationalPositionSerializer(source="position", read_only=True)
     attendance_status_detail = AttendanceStatusSerializer(source="attendance_status", read_only=True)
     work_time_code_detail = WorkTimeCodeSerializer(source="work_time_code", read_only=True)
+    operational_code_detail = OperationalCodeSerializer(source="operational_code", read_only=True)
 
     class Meta:
         model = CalendarDayCell
@@ -162,6 +230,8 @@ class CalendarDayCellSerializer(serializers.ModelSerializer):
             "attendance_status_detail",
             "work_time_code",
             "work_time_code_detail",
+            "operational_code",
+            "operational_code_detail",
             "overtime_minutes",
             "memo",
             "raw_value",
@@ -175,6 +245,7 @@ class CalendarDayCellSerializer(serializers.ModelSerializer):
             "position_detail",
             "attendance_status_detail",
             "work_time_code_detail",
+            "operational_code_detail",
             "created_at",
             "updated_at",
         ]

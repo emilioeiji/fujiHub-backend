@@ -13,9 +13,12 @@ from .models import (
     AttendanceStatus,
     CalendarDayCell,
     CalendarEmployeeAssignment,
+    EmployeeVisualCategory,
     MonthlyOperationCalendar,
+    OperationalCode,
     OperationalPosition,
     PositionDailyRequirement,
+    RotationGroupStyle,
     WorkTimeCode,
 )
 from .permissions import OperationsCalendarPermission, OperationsMasterDataPermission
@@ -23,12 +26,20 @@ from .serializers import (
     AttendanceStatusSerializer,
     CalendarDayCellSerializer,
     CalendarEmployeeAssignmentSerializer,
+    EmployeeVisualCategorySerializer,
     MonthlyOperationCalendarSerializer,
+    OperationalCodeSerializer,
     OperationalPositionSerializer,
     PositionDailyRequirementSerializer,
+    RotationGroupStyleSerializer,
     WorkTimeCodeSerializer,
 )
-from .services import build_calendar_cell_parser_context, generate_calendar_schedule, parse_calendar_cell_value
+from .services import (
+    build_calendar_cell_parser_context,
+    generate_calendar_schedule,
+    import_calendar_employees,
+    parse_calendar_cell_value,
+)
 
 
 class ActorMixin:
@@ -65,6 +76,24 @@ class AttendanceStatusViewSet(ActorMixin, viewsets.ModelViewSet):
 class WorkTimeCodeViewSet(ActorMixin, viewsets.ModelViewSet):
     queryset = WorkTimeCode.objects.all()
     serializer_class = WorkTimeCodeSerializer
+    permission_classes = [OperationsMasterDataPermission]
+
+
+class RotationGroupStyleViewSet(ActorMixin, viewsets.ModelViewSet):
+    queryset = RotationGroupStyle.objects.all()
+    serializer_class = RotationGroupStyleSerializer
+    permission_classes = [OperationsMasterDataPermission]
+
+
+class EmployeeVisualCategoryViewSet(ActorMixin, viewsets.ModelViewSet):
+    queryset = EmployeeVisualCategory.objects.all()
+    serializer_class = EmployeeVisualCategorySerializer
+    permission_classes = [OperationsMasterDataPermission]
+
+
+class OperationalCodeViewSet(ActorMixin, viewsets.ModelViewSet):
+    queryset = OperationalCode.objects.select_related("attendance_status", "work_time_code")
+    serializer_class = OperationalCodeSerializer
     permission_classes = [OperationsMasterDataPermission]
 
 
@@ -186,6 +215,28 @@ class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
 
         return Response(result, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=["post"], url_path="import-employees")
+    def import_employees(self, request, pk=None):
+        calendar = self.get_object()
+        import_all = self._parse_bool(request.data.get("import_all", False))
+        employee_ids = request.data.get("employee_ids") or []
+
+        if not import_all and not employee_ids:
+            return Response(
+                {"detail": "import_all or employee_ids is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if employee_ids and not isinstance(employee_ids, list):
+            return Response({"employee_ids": "Expected a list."}, status=status.HTTP_400_BAD_REQUEST)
+
+        result = import_calendar_employees(
+            calendar,
+            user=self._actor(),
+            import_all=import_all,
+            employee_ids=employee_ids,
+        )
+        return Response(result, status=status.HTTP_200_OK)
+
     def _parse_bool(self, value):
         if isinstance(value, bool):
             return value
@@ -283,6 +334,7 @@ class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
             "position",
             "attendance_status",
             "work_time_code",
+            "operational_code",
         )
         date_from = self.request.query_params.get("date_from")
         date_to = self.request.query_params.get("date_to")
@@ -332,6 +384,7 @@ class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
                     cell.position = parsed.position
                     cell.attendance_status = parsed.attendance_status
                     cell.work_time_code = parsed.work_time_code
+                    cell.operational_code = parsed.operational_code
                     cell.memo = parsed.memo
                     cell.updated_by = actor
                     cell.save()

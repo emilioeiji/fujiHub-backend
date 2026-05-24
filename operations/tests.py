@@ -276,6 +276,7 @@ class OperationsCalendarAPITests(TestCase):
             process=self.process,
             shift=self.shift,
             building_floor=self.building_floor,
+            active_end_month=True,
         )
         self.second_employee = Employee.objects.create(
             employee_id="EMP-OPS-API-002",
@@ -285,6 +286,17 @@ class OperationsCalendarAPITests(TestCase):
             process=self.process,
             shift=self.shift,
             building_floor=self.building_floor,
+            active_end_month=True,
+        )
+        self.inactive_employee = Employee.objects.create(
+            employee_id="EMP-OPS-API-003",
+            name_jp="非稼働",
+            name_en="Inactive Worker",
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+            building_floor=self.building_floor,
+            active_end_month=False,
         )
         self.admin_user = self._create_user_with_role("ops-admin", "admin")
         self.supervisor_user = self._create_user_with_role("ops-supervisor", "supervisor")
@@ -962,6 +974,94 @@ class OperationsCalendarAPITests(TestCase):
         response = self.client.post(
             f"/api/operations/calendars/{calendar['id']}/generate-schedule/",
             {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_import_employees_imports_all_active_department_employees(self):
+        calendar = self._create_calendar()
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/import-employees/",
+            {"import_all": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["created"], 2)
+        self.assertEqual(response.data["skipped"], 0)
+        employees = set(CalendarEmployeeAssignment.objects.values_list("employee_id", flat=True))
+        self.assertEqual(employees, {self.employee.employee_id, self.second_employee.employee_id})
+
+    def test_import_employees_imports_selected_employees(self):
+        calendar = self._create_calendar()
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/import-employees/",
+            {"employee_ids": [self.second_employee.employee_id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["created"], 1)
+        assignment = CalendarEmployeeAssignment.objects.get()
+        self.assertEqual(assignment.employee_id, self.second_employee.employee_id)
+
+    def test_import_employees_skips_duplicates(self):
+        calendar = self._create_calendar()
+        self._create_assignment(calendar["id"])
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/import-employees/",
+            {"import_all": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["created"], 1)
+        self.assertEqual(response.data["skipped"], 1)
+
+    def test_import_employees_infers_4x2_and_5x2_patterns(self):
+        self.second_employee.contract_type = "supervisor"
+        self.second_employee.save()
+        calendar = self._create_calendar()
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/import-employees/",
+            {"import_all": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        normal_assignment = CalendarEmployeeAssignment.objects.get(employee=self.employee)
+        supervisor_assignment = CalendarEmployeeAssignment.objects.get(employee=self.second_employee)
+        self.assertEqual(normal_assignment.work_pattern, "4x2")
+        self.assertEqual(normal_assignment.rotation_group, "A")
+        self.assertEqual(supervisor_assignment.work_pattern, "5x2")
+        self.assertEqual(supervisor_assignment.operational_category, "supervisor")
+
+    def test_import_employees_infers_default_position_by_process(self):
+        position = self._create_position()
+        calendar = self._create_calendar()
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/import-employees/",
+            {"employee_ids": [self.employee.employee_id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        assignment = CalendarEmployeeAssignment.objects.get(employee=self.employee)
+        self.assertEqual(assignment.default_position_id, position["id"])
+
+    def test_import_employees_write_permission_is_required(self):
+        calendar = self._create_calendar()
+        self.client.force_authenticate(self.consulta_user)
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/import-employees/",
+            {"import_all": True},
             format="json",
         )
 
