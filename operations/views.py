@@ -36,9 +36,11 @@ from .serializers import (
 )
 from .services import (
     build_calendar_cell_parser_context,
+    calculate_cell_work_minutes,
     generate_calendar_schedule,
     import_calendar_employees,
     parse_calendar_cell_value,
+    recalculate_calendar_totals,
 )
 
 
@@ -137,6 +139,7 @@ class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
 
         user = self._actor()
         cell = serializer.save(calendar=calendar, created_by=user, updated_by=user)
+        calculate_cell_work_minutes(cell)
         return Response(CalendarDayCellSerializer(cell).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["patch"], url_path=r"cells/(?P<cell_id>\d+)")
@@ -154,6 +157,7 @@ class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
             )
 
         serializer.save(updated_by=self._actor())
+        calculate_cell_work_minutes(cell)
         return Response(serializer.data)
 
     @action(detail=True, methods=["post"], url_path="cells/paste")
@@ -193,6 +197,11 @@ class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
 
         result = self._paste_tsv(calendar, assignments[start_index:], start_date, tsv)
         return Response(result, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["get"], url_path="assignment-totals")
+    def assignment_totals(self, request, pk=None):
+        calendar = self.get_object()
+        return Response(recalculate_calendar_totals(calendar))
 
     @action(detail=True, methods=["post"], url_path="generate-schedule")
     def generate_schedule(self, request, pk=None):
@@ -387,6 +396,7 @@ class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
                     cell.operational_code = parsed.operational_code
                     cell.memo = parsed.memo
                     cell.updated_by = actor
+                    calculate_cell_work_minutes(cell, persist=False)
                     cell.save()
 
                     if was_created:

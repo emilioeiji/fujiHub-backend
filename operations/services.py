@@ -1,7 +1,7 @@
 import re
 from calendar import monthrange
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 
 from django.db import transaction
 from django.db.models import Max
@@ -110,6 +110,7 @@ def generate_calendar_schedule(calendar, user, overwrite=False, default_4x2_anch
 
                 cell.calendar = calendar
                 cell.updated_by = user
+                calculate_cell_work_minutes(cell, persist=False)
                 cell.save()
 
                 if was_created:
@@ -120,6 +121,63 @@ def generate_calendar_schedule(calendar, user, overwrite=False, default_4x2_anch
                 current_date += timedelta(days=1)
 
     return result
+
+
+def calculate_cell_work_minutes(cell, persist=True):
+    scheduled_regular, scheduled_ot = _scheduled_minutes(cell)
+    actual_work = scheduled_regular
+    actual_ot = scheduled_ot
+
+    if cell.leave_time and (scheduled_regular or scheduled_ot):
+        actual_work, actual_ot = _actual_minutes_from_leave_time(cell, scheduled_regular, scheduled_ot)
+
+    cell.scheduled_regular_minutes = scheduled_regular
+    cell.scheduled_overtime_minutes = scheduled_ot
+    cell.actual_work_minutes = actual_work
+    cell.actual_overtime_minutes = actual_ot
+    cell.overtime_minutes = actual_ot
+
+    if persist:
+        cell.save(update_fields=[
+            "scheduled_regular_minutes",
+            "scheduled_overtime_minutes",
+            "actual_work_minutes",
+            "actual_overtime_minutes",
+            "overtime_minutes",
+            "updated_at",
+        ])
+
+    return cell
+
+
+def recalculate_calendar_totals(calendar):
+    totals = {}
+    queryset = calendar.day_cells.select_related("assignment").order_by("assignment_id")
+    for cell in queryset:
+        aid = cell.assignment_id
+        if aid not in totals:
+            totals[aid] = {
+                "assignment": aid,
+                "scheduled_regular_minutes_total": 0,
+                "scheduled_overtime_minutes_total": 0,
+                "actual_work_minutes_total": 0,
+                "actual_overtime_minutes_total": 0,
+                "overload_minutes": 0,
+            }
+        row = totals[aid]
+        row["scheduled_regular_minutes_total"] += cell.scheduled_regular_minutes
+        row["scheduled_overtime_minutes_total"] += cell.scheduled_overtime_minutes
+        row["actual_work_minutes_total"] += cell.actual_work_minutes
+        row["actual_overtime_minutes_total"] += cell.actual_overtime_minutes
+
+    for row in totals.values():
+        row["overload_minutes"] = row["actual_overtime_minutes_total"] - row["scheduled_overtime_minutes_total"]
+        row["scheduled_regular_hours"] = _format_minutes(row["scheduled_regular_minutes_total"])
+        row["scheduled_overtime_hours"] = _format_minutes(row["scheduled_overtime_minutes_total"])
+        row["actual_work_hours"] = _format_minutes(row["actual_work_minutes_total"])
+        row["actual_overtime_hours"] = _format_minutes(row["actual_overtime_minutes_total"])
+        row["overload_hours"] = _format_minutes(row["overload_minutes"])
+    return list(totals.values())
 
 
 def import_calendar_employees(calendar, user, import_all=False, employee_ids=None):
@@ -258,6 +316,62 @@ def _last_known_position(calendar, assignment, before_date):
         .first()
     )
     return previous_cell.position if previous_cell else None
+
+
+def _scheduled_minutes(cell):
+    op_code = (getattr(cell.operational_code, "code", "") or "").casefold()
+    work_pattern = getattr(cell.assignment, "work_pattern", "")
+    regular_4x2 = 540
+    regular_5x2 = 480
+    overtime_4x2 = 120
+    overtime_5x2 = 180
+
+    if op_code in {"sunday", "holiday_work", "sunday_teiji", "holiday_work_teiji"}:
+        return 0, 660
+
+    is_working_day = bool(getattr(cell.attendance_status, "is_working_day", False))
+    if not is_working_day:
+        return 0, 0
+
+    if work_pattern == CalendarEmployeeAssignment.WorkPattern.FIVE_TWO:
+        regular = regular_5x2
+        overtime = overtime_5x2
+    else:
+        regular = regular_4x2
+        overtime = overtime_4x2
+
+    if op_code == "teiji":
+        overtime = 0
+
+    return regular, overtime
+
+
+def _actual_minutes_from_leave_time(cell, scheduled_regular, scheduled_overtime):
+    total_planned = scheduled_regular + scheduled_overtime
+    if total_planned <= 0:
+        return 0, 0
+
+    # Regra simples do MVP: considera inicio padrão às 08:00.
+    start_minutes = 8 * 60
+    leave_minutes = cell.leave_time.hour * 60 + cell.leave_time.minute
+    worked = max(0, min(660, leave_minutes - start_minutes))
+
+    op_code = (getattr(cell.operational_code, "code", "") or "").casefold()
+    if op_code == "teiji":
+        teiji_regular = 480 if cell.assignment.work_pattern == CalendarEmployeeAssignment.WorkPattern.FIVE_TWO else 540
+        actual_work = min(worked, teiji_regular)
+        actual_ot = max(0, worked - teiji_regular)
+        return actual_work, actual_ot
+
+    actual_work = min(worked, scheduled_regular)
+    actual_ot = max(0, worked - scheduled_regular)
+    return actual_work, actual_ot
+
+
+def _format_minutes(minutes):
+    sign = "-" if minutes < 0 else ""
+    value = abs(int(minutes))
+    return f"{sign}{value // 60:02d}:{value % 60:02d}"
 
 
 def build_calendar_cell_parser_context(calendar):

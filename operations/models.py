@@ -361,6 +361,12 @@ class CalendarDayCell(BaseModel):
         null=True,
         related_name="day_cells",
     )
+    scheduled_regular_minutes = models.PositiveIntegerField(default=0)
+    scheduled_overtime_minutes = models.PositiveIntegerField(default=0)
+    actual_work_minutes = models.PositiveIntegerField(default=0)
+    actual_overtime_minutes = models.PositiveIntegerField(default=0)
+    leave_time = models.TimeField(blank=True, null=True)
+    time_note = models.TextField(blank=True)
     overtime_minutes = models.PositiveIntegerField(default=0)
     memo = models.TextField(blank=True)
     raw_value = models.CharField(max_length=255, blank=True)
