@@ -22,6 +22,7 @@ PASTE_TOKEN_SEPARATOR_RE = re.compile(r"[\s+/・]+")
 FOUR_TWO_GROUP_OFFSETS = {"A": 0, "B": 2, "C": 4}
 DEFAULT_FIVE_TWO_OFF_DAYS = [5, 6]
 FIVE_TWO_KEYWORDS = {"supervisor", "manager", "staff", "管理", "スタッフ"}
+SPECIAL_ALL_OT_CODES = {"sunday", "holiday_work", "sunday_teiji", "holiday_work_teiji"}
 
 
 @dataclass
@@ -124,12 +125,14 @@ def generate_calendar_schedule(calendar, user, overwrite=False, default_4x2_anch
 
 
 def calculate_cell_work_minutes(cell, persist=True):
+    _apply_default_timing_fields(cell)
     scheduled_regular, scheduled_ot = _scheduled_minutes(cell)
     actual_work = scheduled_regular
     actual_ot = scheduled_ot
 
-    if cell.leave_time and (scheduled_regular or scheduled_ot):
-        actual_work, actual_ot = _actual_minutes_from_leave_time(cell, scheduled_regular, scheduled_ot)
+    effective_end_time = cell.leave_time or cell.end_time
+    if effective_end_time and (scheduled_regular or scheduled_ot):
+        actual_work, actual_ot = _actual_minutes_from_end_time(cell, scheduled_regular, scheduled_ot, effective_end_time)
 
     cell.scheduled_regular_minutes = scheduled_regular
     cell.scheduled_overtime_minutes = scheduled_ot
@@ -144,6 +147,10 @@ def calculate_cell_work_minutes(cell, persist=True):
             "actual_work_minutes",
             "actual_overtime_minutes",
             "overtime_minutes",
+            "start_time",
+            "end_time",
+            "break_minutes",
+            "crosses_midnight",
             "updated_at",
         ])
 
@@ -177,6 +184,12 @@ def recalculate_calendar_totals(calendar):
         row["actual_work_hours"] = _format_minutes(row["actual_work_minutes_total"])
         row["actual_overtime_hours"] = _format_minutes(row["actual_overtime_minutes_total"])
         row["overload_hours"] = _format_minutes(row["overload_minutes"])
+        # Alias fields kept for frontend compatibility in MVP iterations.
+        row["scheduled_regular_formatted"] = row["scheduled_regular_hours"]
+        row["scheduled_overtime_formatted"] = row["scheduled_overtime_hours"]
+        row["actual_work_formatted"] = row["actual_work_hours"]
+        row["actual_overtime_formatted"] = row["actual_overtime_hours"]
+        row["overload_formatted"] = row["overload_hours"]
     return list(totals.values())
 
 
@@ -207,6 +220,7 @@ def import_calendar_employees(calendar, user, import_all=False, employee_ids=Non
                 operational_category=_infer_operational_category(employee),
                 work_pattern=_infer_work_pattern(employee),
                 rotation_group="A",
+                shift_type=_infer_shift_type(employee),
                 five_two_off_days=DEFAULT_FIVE_TWO_OFF_DAYS.copy(),
                 default_position=_infer_default_position(calendar, employee),
                 start_date=month_start,
@@ -241,6 +255,20 @@ def _infer_work_pattern(employee):
         if employee.manager_flag or _employee_has_any_keyword(employee, FIVE_TWO_KEYWORDS)
         else CalendarEmployeeAssignment.WorkPattern.FOUR_TWO
     )
+
+
+def _infer_shift_type(employee):
+    shift_text = " ".join(
+        str(value or "")
+        for value in [
+            getattr(employee.shift, "code", ""),
+            getattr(employee.shift, "label_pt", ""),
+            getattr(employee.shift, "label_jp", ""),
+        ]
+    ).casefold()
+    if any(keyword in shift_text for keyword in {"night", "noite", "夜", "yakin"}):
+        return CalendarEmployeeAssignment.ShiftType.NIGHT
+    return CalendarEmployeeAssignment.ShiftType.DAY
 
 
 def _infer_operational_category(employee):
@@ -326,8 +354,10 @@ def _scheduled_minutes(cell):
     overtime_4x2 = 120
     overtime_5x2 = 180
 
-    if op_code in {"sunday", "holiday_work", "sunday_teiji", "holiday_work_teiji"}:
+    if op_code in SPECIAL_ALL_OT_CODES:
         return 0, 660
+    if op_code == "vaccine":
+        return 0, 0
 
     is_working_day = bool(getattr(cell.attendance_status, "is_working_day", False))
     if not is_working_day:
@@ -340,24 +370,31 @@ def _scheduled_minutes(cell):
         regular = regular_4x2
         overtime = overtime_4x2
 
-    if op_code == "teiji":
+    if op_code.endswith("teiji") or op_code == "teiji":
         overtime = 0
 
     return regular, overtime
 
 
-def _actual_minutes_from_leave_time(cell, scheduled_regular, scheduled_overtime):
+def _actual_minutes_from_end_time(cell, scheduled_regular, scheduled_overtime, end_time):
     total_planned = scheduled_regular + scheduled_overtime
     if total_planned <= 0:
         return 0, 0
 
-    # Regra simples do MVP: considera inicio padrão às 08:00.
-    start_minutes = 8 * 60
-    leave_minutes = cell.leave_time.hour * 60 + cell.leave_time.minute
-    worked = max(0, min(660, leave_minutes - start_minutes))
+    start_minutes = _minutes_of_day(cell.start_time or time(8, 30))
+    end_minutes = _minutes_of_day(end_time)
+    gross = _elapsed_minutes(start_minutes, end_minutes, bool(cell.crosses_midnight))
+    if not cell.crosses_midnight and end_minutes < start_minutes:
+        gross = _elapsed_minutes(start_minutes, end_minutes, True)
+
+    break_applied = _break_deduction(gross, int(cell.break_minutes or 0))
+    worked = max(0, gross - break_applied)
 
     op_code = (getattr(cell.operational_code, "code", "") or "").casefold()
-    if op_code == "teiji":
+    if op_code in SPECIAL_ALL_OT_CODES:
+        return 0, worked
+
+    if op_code.endswith("teiji") or op_code == "teiji":
         teiji_regular = 480 if cell.assignment.work_pattern == CalendarEmployeeAssignment.WorkPattern.FIVE_TWO else 540
         actual_work = min(worked, teiji_regular)
         actual_ot = max(0, worked - teiji_regular)
@@ -372,6 +409,60 @@ def _format_minutes(minutes):
     sign = "-" if minutes < 0 else ""
     value = abs(int(minutes))
     return f"{sign}{value // 60:02d}:{value % 60:02d}"
+
+
+def _apply_default_timing_fields(cell):
+    if cell.manual_time_override:
+        return
+
+    work_pattern = getattr(cell.assignment, "work_pattern", "")
+    shift_type = getattr(cell.assignment, "shift_type", CalendarEmployeeAssignment.ShiftType.DAY)
+
+    if work_pattern == CalendarEmployeeAssignment.WorkPattern.FOUR_TWO and shift_type == CalendarEmployeeAssignment.ShiftType.NIGHT:
+        cell.start_time = time(20, 30)
+        cell.end_time = time(8, 35)
+        cell.crosses_midnight = True
+        cell.break_minutes = 65
+        return
+
+    if work_pattern == CalendarEmployeeAssignment.WorkPattern.FOUR_TWO:
+        cell.start_time = time(8, 30)
+        cell.end_time = time(20, 35)
+        cell.crosses_midnight = False
+        cell.break_minutes = 65
+        return
+
+    if work_pattern == CalendarEmployeeAssignment.WorkPattern.FIVE_TWO:
+        cell.start_time = time(8, 30)
+        cell.end_time = time(20, 35)
+        cell.crosses_midnight = False
+        cell.break_minutes = 65
+        return
+
+    if not cell.start_time:
+        cell.start_time = time(8, 30)
+    if cell.end_time is None:
+        cell.end_time = time(20, 35)
+
+
+def _minutes_of_day(value):
+    return value.hour * 60 + value.minute
+
+
+def _elapsed_minutes(start_minutes, end_minutes, crosses_midnight):
+    if crosses_midnight:
+        if end_minutes >= start_minutes:
+            return end_minutes - start_minutes
+        return (24 * 60 - start_minutes) + end_minutes
+    return max(0, end_minutes - start_minutes)
+
+
+def _break_deduction(gross_minutes, configured_break):
+    if gross_minutes < 240:
+        return 0
+    if gross_minutes < 360:
+        return min(20, configured_break)
+    return min(configured_break, gross_minutes)
 
 
 def build_calendar_cell_parser_context(calendar):

@@ -270,6 +270,11 @@ class CalendarEmployeeAssignment(BaseModel):
         B = "B", "B"
         C = "C", "C"
 
+    class ShiftType(models.TextChoices):
+        DAY = "day", "Day"
+        NIGHT = "night", "Night"
+        FLEXIBLE = "flexible", "Flexible"
+
     calendar = models.ForeignKey(
         MonthlyOperationCalendar,
         on_delete=models.CASCADE,
@@ -294,6 +299,11 @@ class CalendarEmployeeAssignment(BaseModel):
         max_length=1,
         choices=RotationGroup.choices,
         blank=True,
+    )
+    shift_type = models.CharField(
+        max_length=10,
+        choices=ShiftType.choices,
+        default=ShiftType.DAY,
     )
     five_two_off_days = models.JSONField(default=list, blank=True)
     default_position = models.ForeignKey(
@@ -365,6 +375,11 @@ class CalendarDayCell(BaseModel):
     scheduled_overtime_minutes = models.PositiveIntegerField(default=0)
     actual_work_minutes = models.PositiveIntegerField(default=0)
     actual_overtime_minutes = models.PositiveIntegerField(default=0)
+    start_time = models.TimeField(blank=True, null=True)
+    end_time = models.TimeField(blank=True, null=True)
+    break_minutes = models.PositiveIntegerField(default=0)
+    crosses_midnight = models.BooleanField(default=False)
+    manual_time_override = models.BooleanField(default=False)
     leave_time = models.TimeField(blank=True, null=True)
     time_note = models.TextField(blank=True)
     overtime_minutes = models.PositiveIntegerField(default=0)

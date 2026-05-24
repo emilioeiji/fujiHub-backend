@@ -91,6 +91,7 @@ class CalendarEmployeeAssignmentInline(admin.TabularInline):
         "operational_category",
         "work_pattern",
         "rotation_group",
+        "shift_type",
         "five_two_off_days",
         "default_position",
         "start_date",
@@ -127,13 +128,14 @@ class CalendarEmployeeAssignmentAdmin(admin.ModelAdmin):
         "operational_category",
         "work_pattern",
         "rotation_group",
+        "shift_type",
         "default_position",
         "start_date",
         "end_date",
         "display_order",
         "is_active",
     )
-    list_filter = ("operational_category", "work_pattern", "rotation_group", "calendar", "start_date", "is_active")
+    list_filter = ("operational_category", "work_pattern", "rotation_group", "shift_type", "calendar", "start_date", "is_active")
     search_fields = ("employee__employee_id", "employee__name_en", "employee__name_jp", "notes")
 
 
@@ -147,6 +149,13 @@ class CalendarDayCellAdmin(admin.ModelAdmin):
         "attendance_status",
         "work_time_code",
         "operational_code",
+        "scheduled_regular_minutes",
+        "scheduled_overtime_minutes",
+        "start_time",
+        "end_time",
+        "break_minutes",
+        "crosses_midnight",
+        "manual_time_override",
         "overtime_minutes",
     )
     list_filter = ("calendar", "date", "position", "attendance_status", "work_time_code", "operational_code")

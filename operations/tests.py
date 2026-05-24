@@ -1054,7 +1054,7 @@ class OperationsCalendarAPITests(TestCase):
 
     def test_hours_4x2_normal_cell(self):
         calendar = self._create_calendar()
-        assignment = self._create_assignment(calendar["id"], work_pattern="4x2")
+        assignment = self._create_assignment(calendar["id"], work_pattern="4x2", shift_type="day")
         work_status = AttendanceStatus.objects.get(code="work")
         regular = WorkTimeCode.objects.get(code="regular")
 
@@ -1072,6 +1072,34 @@ class OperationsCalendarAPITests(TestCase):
         cell = CalendarDayCell.objects.get(pk=response.data["id"])
         self.assertEqual(cell.scheduled_regular_minutes, 540)
         self.assertEqual(cell.scheduled_overtime_minutes, 120)
+        self.assertEqual(str(cell.start_time), "08:30:00")
+        self.assertEqual(str(cell.end_time), "20:35:00")
+        self.assertEqual(cell.break_minutes, 65)
+        self.assertFalse(cell.crosses_midnight)
+
+    def test_hours_4x2_night_normal_cell(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"], work_pattern="4x2", shift_type="night")
+        work_status = AttendanceStatus.objects.get(code="work")
+        regular = WorkTimeCode.objects.get(code="regular")
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-01",
+                "attendance_status": work_status.pk,
+                "work_time_code": regular.pk,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        cell = CalendarDayCell.objects.get(pk=response.data["id"])
+        self.assertEqual(cell.scheduled_regular_minutes, 540)
+        self.assertEqual(cell.scheduled_overtime_minutes, 120)
+        self.assertEqual(str(cell.start_time), "20:30:00")
+        self.assertEqual(str(cell.end_time), "08:35:00")
+        self.assertEqual(cell.break_minutes, 65)
+        self.assertTrue(cell.crosses_midnight)
 
     def test_hours_5x2_normal_cell(self):
         calendar = self._create_calendar()
@@ -1092,6 +1120,26 @@ class OperationsCalendarAPITests(TestCase):
         cell = CalendarDayCell.objects.get(pk=response.data["id"])
         self.assertEqual(cell.scheduled_regular_minutes, 480)
         self.assertEqual(cell.scheduled_overtime_minutes, 180)
+
+    def test_hours_5x2_teiji(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"], work_pattern="5x2", shift_type="day")
+        work_status = AttendanceStatus.objects.get(code="work")
+        teiji = OperationalCode.objects.get(code="teiji")
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-01",
+                "attendance_status": work_status.pk,
+                "operational_code": teiji.pk,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        cell = CalendarDayCell.objects.get(pk=response.data["id"])
+        self.assertEqual(cell.scheduled_regular_minutes, 480)
+        self.assertEqual(cell.scheduled_overtime_minutes, 0)
 
     def test_hours_special_codes_sunday_and_holiday_work(self):
         calendar = self._create_calendar()
@@ -1120,6 +1168,8 @@ class OperationsCalendarAPITests(TestCase):
         )
         sunday = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-04")
         holiday = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-05")
+        self.assertEqual(sunday.scheduled_regular_minutes, 0)
+        self.assertEqual(holiday.scheduled_regular_minutes, 0)
         self.assertEqual(sunday.scheduled_overtime_minutes, 660)
         self.assertEqual(holiday.scheduled_overtime_minutes, 660)
 
@@ -1137,9 +1187,37 @@ class OperationsCalendarAPITests(TestCase):
         self.assertEqual(cell.scheduled_regular_minutes, 0)
         self.assertEqual(cell.scheduled_overtime_minutes, 0)
 
+    def test_hours_paid_leave_absence_and_vaccine_are_zero(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"], work_pattern="4x2", shift_type="day")
+        paid_leave = AttendanceStatus.objects.get(code="paid_leave")
+        absence = AttendanceStatus.objects.get(code="absence")
+        work_status = AttendanceStatus.objects.get(code="work")
+        vaccine = OperationalCode.objects.get(code="vaccine")
+
+        payloads = [
+            {"date": "2026-05-01", "attendance_status": paid_leave.pk},
+            {"date": "2026-05-02", "attendance_status": absence.pk},
+            {"date": "2026-05-03", "attendance_status": work_status.pk, "operational_code": vaccine.pk},
+        ]
+        for payload in payloads:
+            response = self.client.post(
+                f"/api/operations/calendars/{calendar['id']}/cells/",
+                {"assignment": assignment["id"], **payload},
+                format="json",
+            )
+            self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        cells = CalendarDayCell.objects.filter(assignment_id=assignment["id"]).order_by("date")
+        for cell in cells:
+            self.assertEqual(cell.scheduled_regular_minutes, 0)
+            self.assertEqual(cell.scheduled_overtime_minutes, 0)
+            self.assertEqual(cell.actual_work_minutes, 0)
+            self.assertEqual(cell.actual_overtime_minutes, 0)
+
     def test_hours_teiji_with_leave_time_adjusts_overtime(self):
         calendar = self._create_calendar()
-        assignment = self._create_assignment(calendar["id"], work_pattern="4x2")
+        assignment = self._create_assignment(calendar["id"], work_pattern="4x2", shift_type="day")
         work_status = AttendanceStatus.objects.get(code="work")
         teiji = OperationalCode.objects.get(code="teiji")
         response = self.client.post(
@@ -1157,6 +1235,105 @@ class OperationsCalendarAPITests(TestCase):
         cell = CalendarDayCell.objects.get(pk=response.data["id"])
         self.assertEqual(cell.scheduled_overtime_minutes, 0)
         self.assertEqual(cell.actual_overtime_minutes, 0)
+        self.assertEqual(cell.actual_work_minutes, 445)
+
+    def test_hours_4x2_night_teiji(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"], work_pattern="4x2", shift_type="night")
+        work_status = AttendanceStatus.objects.get(code="work")
+        teiji = OperationalCode.objects.get(code="teiji")
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-01",
+                "attendance_status": work_status.pk,
+                "operational_code": teiji.pk,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        cell = CalendarDayCell.objects.get(pk=response.data["id"])
+        self.assertEqual(cell.scheduled_regular_minutes, 540)
+        self.assertEqual(cell.scheduled_overtime_minutes, 0)
+
+    def test_hours_4x2_day_leave_time_reduces_overtime(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"], work_pattern="4x2", shift_type="day")
+        work_status = AttendanceStatus.objects.get(code="work")
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-01",
+                "attendance_status": work_status.pk,
+                "leave_time": "18:30",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        cell = CalendarDayCell.objects.get(pk=response.data["id"])
+        self.assertEqual(cell.actual_work_minutes, 535)
+        self.assertEqual(cell.actual_overtime_minutes, 0)
+
+    def test_hours_4x2_night_leave_time_after_midnight(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"], work_pattern="4x2", shift_type="night")
+        work_status = AttendanceStatus.objects.get(code="work")
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-01",
+                "attendance_status": work_status.pk,
+                "leave_time": "03:00",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        cell = CalendarDayCell.objects.get(pk=response.data["id"])
+        self.assertEqual(cell.actual_work_minutes, 325)
+        self.assertEqual(cell.actual_overtime_minutes, 0)
+
+    def test_hours_4x2_night_leave_time_0500(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"], work_pattern="4x2", shift_type="night")
+        work_status = AttendanceStatus.objects.get(code="work")
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-01",
+                "attendance_status": work_status.pk,
+                "leave_time": "05:00",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        cell = CalendarDayCell.objects.get(pk=response.data["id"])
+        self.assertEqual(cell.actual_work_minutes, 445)
+        self.assertEqual(cell.actual_overtime_minutes, 0)
+
+    def test_hours_sunday_with_leave_time_calculates_real_overtime(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"], work_pattern="4x2", shift_type="day")
+        off_status = AttendanceStatus.objects.get(code="off")
+        sunday = OperationalCode.objects.get(code="sunday")
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-04",
+                "attendance_status": off_status.pk,
+                "operational_code": sunday.pk,
+                "leave_time": "12:30",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        cell = CalendarDayCell.objects.get(pk=response.data["id"])
+        self.assertEqual(cell.scheduled_regular_minutes, 0)
+        self.assertEqual(cell.actual_overtime_minutes, 220)
 
     def test_assignment_totals_endpoint(self):
         calendar = self._create_calendar()
@@ -1175,6 +1352,62 @@ class OperationsCalendarAPITests(TestCase):
         first = response.data[0]
         self.assertEqual(first["scheduled_regular_minutes_total"], 1080)
         self.assertEqual(first["scheduled_overtime_minutes_total"], 240)
+        self.assertEqual(first["scheduled_regular_formatted"], "18:00")
+        self.assertEqual(first["scheduled_overtime_formatted"], "04:00")
+
+    def test_cell_recalculation_does_not_accumulate_on_multiple_saves(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"], work_pattern="4x2")
+        work_status = AttendanceStatus.objects.get(code="work")
+        regular = WorkTimeCode.objects.get(code="regular")
+
+        create = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-01",
+                "attendance_status": work_status.pk,
+                "work_time_code": regular.pk,
+            },
+            format="json",
+        )
+        self.assertEqual(create.status_code, status.HTTP_201_CREATED)
+        cell_id = create.data["id"]
+
+        for _ in range(3):
+            patch = self.client.patch(
+                f"/api/operations/calendars/{calendar['id']}/cells/{cell_id}/",
+                {"memo": "saving again"},
+                format="json",
+            )
+            self.assertEqual(patch.status_code, status.HTTP_200_OK)
+
+        cell = CalendarDayCell.objects.get(pk=cell_id)
+        self.assertEqual(cell.scheduled_regular_minutes, 540)
+        self.assertEqual(cell.scheduled_overtime_minutes, 120)
+        self.assertEqual(cell.actual_work_minutes, 540)
+        self.assertEqual(cell.actual_overtime_minutes, 120)
+
+    def test_vaccine_code_keeps_hours_zero_when_attendance_status_is_not_working(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"], work_pattern="4x2")
+        off_status = AttendanceStatus.objects.get(code="off")
+        vaccine = OperationalCode.objects.get(code="vaccine")
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-02",
+                "attendance_status": off_status.pk,
+                "operational_code": vaccine.pk,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        cell = CalendarDayCell.objects.get(pk=response.data["id"])
+        self.assertEqual(cell.scheduled_regular_minutes, 0)
+        self.assertEqual(cell.scheduled_overtime_minutes, 0)
 
     def test_import_employees_imports_all_active_department_employees(self):
         calendar = self._create_calendar()

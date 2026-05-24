@@ -8,7 +8,12 @@ from master.models import Department
 
 from .helpers import get_user_role, has_any_role, has_role, user_department
 from .models import Role, UserProfile
-from .permissions import HasAnyRole, IsAdminRole, IsSameDepartmentOrAdmin
+from .permissions import (
+    AccountManagementPermission,
+    HasAnyRole,
+    IsAdminRole,
+    IsSameDepartmentOrAdmin,
+)
 
 
 class AccountHelperTests(TestCase):
@@ -64,6 +69,8 @@ class AccountPermissionTests(TestCase):
         self.factory = APIRequestFactory()
         self.admin_role = Role.objects.get(code="admin")
         self.supervisor_role = Role.objects.get(code="supervisor")
+        self.escritorio_role = Role.objects.get(code="escritorio")
+        self.consulta_role = Role.objects.get(code="consulta")
         self.department = Department.objects.create(
             code="D2",
             label_pt="Departamento 2",
@@ -76,15 +83,24 @@ class AccountPermissionTests(TestCase):
             username="supervisor-user",
             password="password",
         )
+        self.escritorio = User.objects.create_user(username="escritorio-user", password="password")
+        self.consulta = User.objects.create_user(username="consulta-user", password="password")
         UserProfile.objects.create(user=self.admin, role=self.admin_role)
         UserProfile.objects.create(
             user=self.supervisor,
             role=self.supervisor_role,
             department=self.department,
         )
+        UserProfile.objects.create(user=self.escritorio, role=self.escritorio_role)
+        UserProfile.objects.create(user=self.consulta, role=self.consulta_role)
 
     def authenticated_request(self, user):
         request = self.factory.get("/")
+        request.user = user
+        return request
+
+    def authenticated_request_with_method(self, user, method):
+        request = getattr(self.factory, method.lower())("/")
         request.user = user
         return request
 
@@ -134,5 +150,57 @@ class AccountPermissionTests(TestCase):
                 self.authenticated_request(self.admin),
                 None,
                 other_department_object,
+            )
+        )
+
+    def test_account_management_permission_read(self):
+        permission = AccountManagementPermission()
+        view = SimpleNamespace()
+
+        self.assertTrue(
+            permission.has_permission(
+                self.authenticated_request_with_method(self.admin, "get"),
+                view,
+            )
+        )
+        self.assertTrue(
+            permission.has_permission(
+                self.authenticated_request_with_method(self.escritorio, "get"),
+                view,
+            )
+        )
+        self.assertTrue(
+            permission.has_permission(
+                self.authenticated_request_with_method(self.supervisor, "get"),
+                view,
+            )
+        )
+        self.assertFalse(
+            permission.has_permission(
+                self.authenticated_request_with_method(self.consulta, "get"),
+                view,
+            )
+        )
+
+    def test_account_management_permission_write(self):
+        permission = AccountManagementPermission()
+        view = SimpleNamespace()
+
+        self.assertTrue(
+            permission.has_permission(
+                self.authenticated_request_with_method(self.admin, "patch"),
+                view,
+            )
+        )
+        self.assertTrue(
+            permission.has_permission(
+                self.authenticated_request_with_method(self.escritorio, "patch"),
+                view,
+            )
+        )
+        self.assertFalse(
+            permission.has_permission(
+                self.authenticated_request_with_method(self.supervisor, "patch"),
+                view,
             )
         )

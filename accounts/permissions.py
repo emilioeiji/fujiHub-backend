@@ -36,3 +36,17 @@ class IsSameDepartmentOrAdmin(BasePermission):
             object_department = getattr(obj.profile, department_attr, None)
 
         return object_department == current_department
+
+
+class AccountManagementPermission(BasePermission):
+    read_roles = {"admin", "escritorio", "supervisor"}
+    write_roles = {"admin", "escritorio"}
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+
+        if request.method in {"GET", "HEAD", "OPTIONS"}:
+            return has_any_role(request.user, self.read_roles)
+
+        return has_any_role(request.user, self.write_roles)
