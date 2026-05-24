@@ -182,6 +182,16 @@ class CalendarEmployeeAssignment(BaseModel):
         MANAGER = "manager", "Manager"
         DIRECTOR = "director", "Director"
 
+    class WorkPattern(models.TextChoices):
+        FOUR_TWO = "4x2", "4x2"
+        FIVE_TWO = "5x2", "5x2"
+        MANUAL = "manual", "Manual"
+
+    class RotationGroup(models.TextChoices):
+        A = "A", "A"
+        B = "B", "B"
+        C = "C", "C"
+
     calendar = models.ForeignKey(
         MonthlyOperationCalendar,
         on_delete=models.CASCADE,
@@ -196,6 +206,24 @@ class CalendarEmployeeAssignment(BaseModel):
         max_length=30,
         choices=OperationalCategory.choices,
         default=OperationalCategory.NORMAL,
+    )
+    work_pattern = models.CharField(
+        max_length=10,
+        choices=WorkPattern.choices,
+        default=WorkPattern.FOUR_TWO,
+    )
+    rotation_group = models.CharField(
+        max_length=1,
+        choices=RotationGroup.choices,
+        blank=True,
+    )
+    five_two_off_days = models.JSONField(default=list, blank=True)
+    default_position = models.ForeignKey(
+        OperationalPosition,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="default_assignments",
     )
     start_date = models.DateField()
     end_date = models.DateField(blank=True, null=True)

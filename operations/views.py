@@ -28,7 +28,7 @@ from .serializers import (
     PositionDailyRequirementSerializer,
     WorkTimeCodeSerializer,
 )
-from .services import build_calendar_cell_parser_context, parse_calendar_cell_value
+from .services import build_calendar_cell_parser_context, generate_calendar_schedule, parse_calendar_cell_value
 
 
 class ActorMixin:
@@ -164,6 +164,32 @@ class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
 
         result = self._paste_tsv(calendar, assignments[start_index:], start_date, tsv)
         return Response(result, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="generate-schedule")
+    def generate_schedule(self, request, pk=None):
+        calendar = self.get_object()
+        overwrite = self._parse_bool(request.data.get("overwrite", False))
+        anchor_date_raw = request.data.get("default_4x2_anchor_date")
+
+        try:
+            result = generate_calendar_schedule(
+                calendar,
+                user=self._actor(),
+                overwrite=overwrite,
+                default_4x2_anchor_date=anchor_date_raw,
+            )
+        except ValueError:
+            return Response(
+                {"default_4x2_anchor_date": "Invalid date."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(result, status=status.HTTP_200_OK)
+
+    def _parse_bool(self, value):
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().casefold() in {"1", "true", "yes", "sim"}
 
     @action(detail=True, methods=["get", "post"])
     def requirements(self, request, pk=None):

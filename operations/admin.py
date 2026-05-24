@@ -43,6 +43,18 @@ class WorkTimeCodeAdmin(admin.ModelAdmin):
 
 class CalendarEmployeeAssignmentInline(admin.TabularInline):
     model = CalendarEmployeeAssignment
+    fields = (
+        "employee",
+        "operational_category",
+        "work_pattern",
+        "rotation_group",
+        "five_two_off_days",
+        "default_position",
+        "start_date",
+        "end_date",
+        "display_order",
+        "is_active",
+    )
     extra = 0
 
 
@@ -70,12 +82,15 @@ class CalendarEmployeeAssignmentAdmin(admin.ModelAdmin):
         "calendar",
         "employee",
         "operational_category",
+        "work_pattern",
+        "rotation_group",
+        "default_position",
         "start_date",
         "end_date",
         "display_order",
         "is_active",
     )
-    list_filter = ("operational_category", "calendar", "start_date", "is_active")
+    list_filter = ("operational_category", "work_pattern", "rotation_group", "calendar", "start_date", "is_active")
     search_fields = ("employee__employee_id", "employee__name_en", "employee__name_jp", "notes")
 
 

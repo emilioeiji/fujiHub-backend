@@ -301,16 +301,16 @@ class OperationsCalendarAPITests(TestCase):
         UserProfile.objects.create(user=user, role=role, department=self.department)
         return user
 
-    def _create_calendar(self):
+    def _create_calendar(self, *, year=2026, month=5, title=None):
         response = self.client.post(
             "/api/operations/calendars/",
             {
                 "department": self.department.pk,
                 "process": self.process.pk,
                 "shift": self.shift.pk,
-                "year": 2026,
-                "month": 5,
-                "title": "54532 - Maio 2026",
+                "year": year,
+                "month": month,
+                "title": title or f"54532 - {year}-{month:02d}",
             },
             format="json",
         )
@@ -333,29 +333,33 @@ class OperationsCalendarAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         return response.data
 
-    def _create_assignment(self, calendar_id):
+    def _create_assignment(self, calendar_id, **overrides):
+        payload = {
+            "employee": self.employee.pk,
+            "operational_category": "normal",
+            "start_date": "2026-05-01",
+            "display_order": 1,
+        }
+        payload.update(overrides)
         response = self.client.post(
             f"/api/operations/calendars/{calendar_id}/assignments/",
-            {
-                "employee": self.employee.pk,
-                "operational_category": "normal",
-                "start_date": "2026-05-01",
-                "display_order": 1,
-            },
+            payload,
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         return response.data
 
-    def _create_second_assignment(self, calendar_id):
+    def _create_second_assignment(self, calendar_id, **overrides):
+        payload = {
+            "employee": self.second_employee.pk,
+            "operational_category": "normal",
+            "start_date": "2026-05-01",
+            "display_order": 2,
+        }
+        payload.update(overrides)
         response = self.client.post(
             f"/api/operations/calendars/{calendar_id}/assignments/",
-            {
-                "employee": self.second_employee.pk,
-                "operational_category": "normal",
-                "start_date": "2026-05-01",
-                "display_order": 2,
-            },
+            payload,
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -757,6 +761,207 @@ class OperationsCalendarAPITests(TestCase):
                 "start_date": "2026-05-01",
                 "tsv": "休",
             },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_generate_schedule_4x2_group_a_uses_anchor_off_days(self):
+        calendar = self._create_calendar()
+        position = self._create_position()
+        assignment = self._create_assignment(
+            calendar["id"],
+            rotation_group="A",
+            work_pattern="4x2",
+            default_position=position["id"],
+        )
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/generate-schedule/",
+            {"overwrite": False, "default_4x2_anchor_date": "2026-05-30"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["created"], 31)
+        may_29 = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-29")
+        may_30 = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-30")
+        may_31 = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-31")
+        self.assertEqual(may_29.attendance_status.code, "work")
+        self.assertEqual(may_29.position_id, position["id"])
+        self.assertEqual(may_30.attendance_status.code, "off")
+        self.assertEqual(may_30.raw_value, "休")
+        self.assertEqual(may_31.attendance_status.code, "off")
+
+    def test_generate_schedule_4x2_group_b_uses_offset_off_days(self):
+        calendar = self._create_calendar(month=6)
+        assignment = self._create_assignment(
+            calendar["id"],
+            start_date="2026-06-01",
+            rotation_group="B",
+            work_pattern="4x2",
+        )
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/generate-schedule/",
+            {"default_4x2_anchor_date": "2026-05-30"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        june_1 = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-06-01")
+        june_2 = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-06-02")
+        june_3 = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-06-03")
+        self.assertEqual(june_1.attendance_status.code, "off")
+        self.assertEqual(june_2.attendance_status.code, "off")
+        self.assertEqual(june_3.attendance_status.code, "work")
+
+    def test_generate_schedule_4x2_group_c_uses_offset_off_days(self):
+        calendar = self._create_calendar(month=6)
+        assignment = self._create_assignment(
+            calendar["id"],
+            start_date="2026-06-01",
+            rotation_group="C",
+            work_pattern="4x2",
+        )
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/generate-schedule/",
+            {"default_4x2_anchor_date": "2026-05-30"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        june_3 = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-06-03")
+        june_4 = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-06-04")
+        june_5 = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-06-05")
+        self.assertEqual(june_3.attendance_status.code, "off")
+        self.assertEqual(june_4.attendance_status.code, "off")
+        self.assertEqual(june_5.attendance_status.code, "work")
+
+    def test_generate_schedule_5x2_defaults_to_saturday_and_sunday_off(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"], work_pattern="5x2")
+
+        response = self.client.post(f"/api/operations/calendars/{calendar['id']}/generate-schedule/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        saturday = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-02")
+        sunday = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-03")
+        monday = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-04")
+        self.assertEqual(saturday.attendance_status.code, "off")
+        self.assertEqual(sunday.attendance_status.code, "off")
+        self.assertEqual(monday.attendance_status.code, "work")
+
+    def test_generate_schedule_5x2_accepts_custom_off_days(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"], work_pattern="5x2", five_two_off_days=[6, 0])
+
+        response = self.client.post(f"/api/operations/calendars/{calendar['id']}/generate-schedule/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        sunday = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-03")
+        monday = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-04")
+        tuesday = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-05")
+        self.assertEqual(sunday.attendance_status.code, "off")
+        self.assertEqual(monday.attendance_status.code, "off")
+        self.assertEqual(tuesday.attendance_status.code, "work")
+
+    def test_generate_schedule_respects_start_and_end_dates(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(
+            calendar["id"],
+            start_date="2026-05-10",
+            end_date="2026-05-12",
+            work_pattern="5x2",
+        )
+
+        response = self.client.post(f"/api/operations/calendars/{calendar['id']}/generate-schedule/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["created"], 3)
+        dates = list(
+            CalendarDayCell.objects.filter(assignment_id=assignment["id"]).order_by("date").values_list("date", flat=True)
+        )
+        self.assertEqual(dates, [date(2026, 5, 10), date(2026, 5, 11), date(2026, 5, 12)])
+
+    def test_generate_schedule_does_not_overwrite_existing_cell_by_default(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"], work_pattern="5x2")
+        CalendarDayCell.objects.create(
+            calendar_id=calendar["id"],
+            assignment_id=assignment["id"],
+            date=date(2026, 5, 4),
+            raw_value="Manual",
+            memo="Nao mexer",
+        )
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/generate-schedule/",
+            {"overwrite": False},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["skipped"], 1)
+        cell = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-04")
+        self.assertEqual(cell.raw_value, "Manual")
+        self.assertEqual(cell.memo, "Nao mexer")
+
+    def test_generate_schedule_overwrites_existing_cell_and_preserves_memo(self):
+        calendar = self._create_calendar()
+        assignment = self._create_assignment(calendar["id"], work_pattern="5x2")
+        CalendarDayCell.objects.create(
+            calendar_id=calendar["id"],
+            assignment_id=assignment["id"],
+            date=date(2026, 5, 4),
+            raw_value="Manual",
+            memo="Preservar memo",
+        )
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/generate-schedule/",
+            {"overwrite": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        cell = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-04")
+        self.assertEqual(cell.attendance_status.code, "work")
+        self.assertEqual(cell.work_time_code.code, "regular")
+        self.assertEqual(cell.memo, "Preservar memo")
+
+    def test_generate_schedule_uses_last_known_position_when_default_position_is_empty(self):
+        calendar = self._create_calendar()
+        position = self._create_position()
+        assignment = self._create_assignment(calendar["id"], work_pattern="5x2")
+        CalendarDayCell.objects.create(
+            calendar_id=calendar["id"],
+            assignment_id=assignment["id"],
+            date=date(2026, 5, 1),
+            position_id=position["id"],
+            raw_value="ECII",
+        )
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/generate-schedule/",
+            {"overwrite": False},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        cell = CalendarDayCell.objects.get(assignment_id=assignment["id"], date="2026-05-04")
+        self.assertEqual(cell.position_id, position["id"])
+        self.assertEqual(cell.raw_value, "ECII")
+
+    def test_generate_schedule_write_permission_is_required(self):
+        calendar = self._create_calendar()
+        self._create_assignment(calendar["id"])
+        self.client.force_authenticate(self.consulta_user)
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/generate-schedule/",
+            {},
             format="json",
         )
 
