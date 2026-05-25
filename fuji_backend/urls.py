@@ -4,7 +4,6 @@ from django.urls import path, include, re_path
 from django.conf import settings
 from django.conf.urls.static import static
 from django.views.generic import TemplateView
-from pathlib import Path
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 urlpatterns = [
@@ -23,7 +22,7 @@ urlpatterns = [
 if settings.DEBUG:
     urlpatterns += static(
         settings.STATIC_URL,
-        document_root=Path(settings.BASE_DIR).parent / "web" / "dist" / "assets"
+        document_root=settings.FRONTEND_ASSETS_DIR,
     )
 
 # Fallback para SPA: qualquer rota não reconhecida → index.html

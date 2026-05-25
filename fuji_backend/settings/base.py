@@ -18,8 +18,9 @@ from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-WEB_DIST = BASE_DIR.parent / "web" / "dist"
 load_dotenv(BASE_DIR / ".env")
+WEB_DIST = Path(os.getenv("WEB_DIST_DIR", BASE_DIR.parent / "web" / "dist"))
+FRONTEND_ASSETS_DIR = Path(os.getenv("FRONTEND_ASSETS_DIR", WEB_DIST / "assets"))
 
 
 def env_bool(name, default=False):
@@ -215,7 +216,7 @@ USE_TZ = True
 
 STATIC_URL = "/assets/"
 STATICFILES_DIRS = [
-    Path(BASE_DIR).parent / "web" / "dist" / "assets",
+    FRONTEND_ASSETS_DIR,
 ]
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"

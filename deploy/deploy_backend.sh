@@ -129,6 +129,34 @@ load_backend_env_file() {
   else
     log_warn "$API_DIR/.env não encontrado. Usando ambiente atual."
   fi
+
+  if [[ -n "${WEB_PUBLISH_DIR:-}" ]]; then
+    local publish_dir
+    publish_dir="${WEB_PUBLISH_DIR%/}"
+    export WEB_DIST_DIR="$publish_dir"
+    export FRONTEND_ASSETS_DIR="$publish_dir/assets"
+    log_ok "WEB_DIST_DIR: $WEB_DIST_DIR"
+    log_ok "FRONTEND_ASSETS_DIR: $FRONTEND_ASSETS_DIR"
+  fi
+}
+
+restart_backend_service() {
+  local service_name="${BACKEND_SERVICE:-}"
+
+  if [[ -z "$service_name" ]]; then
+    log_warn "Backend service not configured, skipping backend restart"
+    log_warn "Em Apache/mod_wsgi, o reload do apache2 no deploy web pode ser suficiente."
+    return
+  fi
+
+  run systemctl_cmd restart "$service_name"
+  log_ok "Serviço reiniciado: $service_name"
+
+  log_ok "Status do serviço $service_name"
+  systemctl_cmd status "$service_name" --no-pager || true
+
+  log_ok "Logs recentes do serviço $service_name"
+  journalctl_cmd -u "$service_name" -n "${BACKEND_LOG_LINES:-80}" --no-pager || true
 }
 
 activate_venv() {
@@ -159,7 +187,6 @@ main() {
   load_config
 
   : "${API_DIR:?API_DIR não definido}"
-  : "${BACKEND_SERVICE:?BACKEND_SERVICE não definido}"
   local branch="${BACKEND_BRANCH:-master}"
 
   log_ok "Deploy backend iniciado em modo $MODE"
@@ -179,16 +206,9 @@ main() {
   fi
 
   run python manage.py check
-  run systemctl_cmd restart "$BACKEND_SERVICE"
-  log_ok "Serviço reiniciado: $BACKEND_SERVICE"
+  restart_backend_service
 
   health_check
-
-  log_ok "Status do serviço $BACKEND_SERVICE"
-  systemctl_cmd status "$BACKEND_SERVICE" --no-pager || true
-
-  log_ok "Logs recentes do serviço $BACKEND_SERVICE"
-  journalctl_cmd -u "$BACKEND_SERVICE" -n "${BACKEND_LOG_LINES:-80}" --no-pager || true
 
   log_ok "Deploy backend concluído"
 }

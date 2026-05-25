@@ -52,6 +52,24 @@ FORCE_STRATEGY=stash
 VITE_API_URL=https://hub.emilioeiji.com.br
 ```
 
+Se o backend roda via Apache/mod_wsgi e não existe um serviço systemd separado para Gunicorn/uWSGI, deixe:
+
+```bash
+BACKEND_SERVICE=
+WEB_SERVER_SERVICE=apache2
+```
+
+Nesse caso, o deploy backend não tenta reiniciar serviço próprio do Django. O reload do `apache2` acontece no deploy web e pode ser suficiente para o Apache/mod_wsgi recarregar a aplicação, dependendo da configuração do WSGI.
+
+Para evitar warnings de assets apontando para `/var/www/web/dist/assets`, configure também o `.env` do backend:
+
+```bash
+WEB_DIST_DIR=/var/www/fujihub-web/dist
+FRONTEND_ASSETS_DIR=/var/www/fujihub-web/dist/assets
+```
+
+Durante o deploy, os scripts também exportam esses valores automaticamente a partir de `WEB_PUBLISH_DIR` quando possível.
+
 Para Apache:
 
 ```bash
@@ -164,8 +182,8 @@ Etapas executadas:
 9. Executa migrations.
 10. Executa `collectstatic`.
 11. Executa `python manage.py check`.
-12. Reinicia o serviço systemd.
-13. Mostra status e logs recentes.
+12. Reinicia o serviço systemd quando `BACKEND_SERVICE` estiver configurado.
+13. Se `BACKEND_SERVICE` estiver vazio, mostra aviso e segue.
 
 ## Deploy Apenas Web
 
