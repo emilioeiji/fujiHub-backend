@@ -160,7 +160,7 @@ main() {
 
   : "${API_DIR:?API_DIR não definido}"
   : "${BACKEND_SERVICE:?BACKEND_SERVICE não definido}"
-  local branch="${BACKEND_BRANCH:-main}"
+  local branch="${BACKEND_BRANCH:-master}"
 
   log_ok "Deploy backend iniciado em modo $MODE"
   update_repo "$API_DIR" "$branch" "Backend"

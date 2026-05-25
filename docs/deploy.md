@@ -41,14 +41,46 @@ Configure pelo menos:
 ```bash
 API_DIR=/var/www/fujihub-api
 WEB_DIR=/var/www/fujihub-web
+BACKEND_BRANCH=master
+WEB_BRANCH=master
 BACKEND_SERVICE=fujihub-api
-NGINX_SERVICE=nginx
+WEB_SERVER_SERVICE=apache2
 WEB_BUILD_DIR=dist
 WEB_PUBLISH_DIR=/var/www/fujihub-web/dist
 VENV_DIR=/var/www/fujihub-api/venv
 FORCE_STRATEGY=stash
-VITE_API_URL=https://api.seu-dominio.com
+VITE_API_URL=https://hub.emilioeiji.com.br
 ```
+
+Para Apache:
+
+```bash
+WEB_SERVER_SERVICE=apache2
+```
+
+Para Nginx:
+
+```bash
+WEB_SERVER_SERVICE=nginx
+```
+
+Para descobrir os nomes reais dos serviços:
+
+```bash
+systemctl list-units --type=service | grep -E "apache|nginx|fujihub|gunicorn"
+```
+
+Para descobrir a branch real em cada repositório:
+
+```bash
+cd /var/www/fujihub-api
+git branch --show-current
+
+cd /var/www/fujihub-web
+git branch --show-current
+```
+
+Use `master` ou `main` no `deploy.env`, conforme o resultado acima.
 
 Se houver endpoints públicos para validação:
 
@@ -78,7 +110,7 @@ O modo `safe`:
 - roda migrations;
 - executa `collectstatic`;
 - faz build do frontend;
-- recarrega nginx;
+- recarrega o web server, Apache ou Nginx;
 - reinicia o serviço backend.
 
 ## Deploy Forçado
@@ -153,7 +185,7 @@ Etapas executadas:
 7. Executa `npm ci` se houver `package-lock.json`; senão `npm install`.
 8. Executa `npm run build`.
 9. Publica `dist` em `WEB_PUBLISH_DIR`, se for diferente.
-10. Recarrega nginx.
+10. Recarrega o web server, Apache ou Nginx.
 11. Executa health check se `WEB_HEALTH_URL` estiver definido.
 
 ## Troubleshooting
@@ -219,7 +251,7 @@ cd /var/www/fujihub-api
 ./deploy/deploy_web.sh safe
 ```
 
-Se o navegador continuar mostrando build antigo, verifique cache do browser/CDN e confirme se `WEB_PUBLISH_DIR` é o diretório servido pelo nginx.
+Se o navegador continuar mostrando build antigo, verifique cache do browser/CDN e confirme se `WEB_PUBLISH_DIR` é o diretório servido pelo Apache/Nginx.
 
 ### VITE_API_URL Errado
 
@@ -232,7 +264,7 @@ grep VITE_API_URL /var/www/fujihub-api/deploy/deploy.env
 Deve apontar para a API real, não para `localhost`:
 
 ```bash
-VITE_API_URL=https://api.seu-dominio.com
+VITE_API_URL=https://hub.emilioeiji.com.br
 ```
 
 Depois gere novo build:
@@ -241,9 +273,17 @@ Depois gere novo build:
 ./deploy/deploy_web.sh safe
 ```
 
-### Nginx
+### Apache Ou Nginx
 
 Verifique:
+
+```bash
+systemctl list-units --type=service | grep -E "apache|nginx"
+sudo systemctl status apache2 --no-pager
+sudo journalctl -u apache2 -n 80 --no-pager
+```
+
+Para Nginx, use:
 
 ```bash
 sudo nginx -t
@@ -251,10 +291,10 @@ sudo systemctl status nginx --no-pager
 sudo journalctl -u nginx -n 80 --no-pager
 ```
 
-Recarregue:
+Recarregue o serviço configurado em `WEB_SERVER_SERVICE`:
 
 ```bash
-sudo systemctl reload nginx
+sudo systemctl reload apache2
 ```
 
 ### Systemd Backend
@@ -289,7 +329,7 @@ Confirme que o usuário que roda deploy consegue:
 - ler os repositórios;
 - escrever no diretório de build/publicação;
 - executar `sudo systemctl restart fujihub-api`;
-- executar `sudo systemctl reload nginx`.
+- executar `sudo systemctl reload apache2` ou `sudo systemctl reload nginx`, conforme `WEB_SERVER_SERVICE`.
 
 Para systemd sem senha, configure sudoers com cuidado para os comandos específicos.
 
@@ -308,7 +348,7 @@ Web:
 
 ```bash
 cd /var/www/fujihub-web
-export VITE_API_URL=https://api.seu-dominio.com
+export VITE_API_URL=https://hub.emilioeiji.com.br
 npm run build
 ```
 

@@ -113,7 +113,7 @@ update_repo() {
 
 validate_api_url() {
   if [[ -z "${VITE_API_URL:-}" ]]; then
-    die "VITE_API_URL não definido. Configure em deploy.env para evitar localhost em produção."
+    die "VITE_API_URL está vazio. Configure deploy/deploy.env antes do build. Exemplo: VITE_API_URL=https://hub.emilioeiji.com.br"
   fi
 
   if [[ "$VITE_API_URL" == *localhost* || "$VITE_API_URL" == *127.0.0.1* ]]; then
@@ -175,13 +175,24 @@ health_check() {
   esac
 }
 
+reload_web_server() {
+  local service_name="${WEB_SERVER_SERVICE:-${NGINX_SERVICE:-}}"
+
+  if [[ -z "$service_name" ]]; then
+    log_warn "WEB_SERVER_SERVICE vazio. Reload do web server ignorado."
+    return
+  fi
+
+  run systemctl_cmd reload "$service_name"
+  log_ok "Web server recarregado: $service_name"
+}
+
 main() {
   validate_mode
   load_config
 
   : "${WEB_DIR:?WEB_DIR não definido}"
-  : "${NGINX_SERVICE:?NGINX_SERVICE não definido}"
-  local branch="${WEB_BRANCH:-main}"
+  local branch="${WEB_BRANCH:-master}"
 
   log_ok "Deploy web iniciado em modo $MODE"
   update_repo "$WEB_DIR" "$branch" "Frontend"
@@ -192,8 +203,7 @@ main() {
   run npm run build
   publish_build
 
-  run systemctl_cmd reload "$NGINX_SERVICE"
-  log_ok "Nginx recarregado: $NGINX_SERVICE"
+  reload_web_server
 
   health_check
   log_ok "Deploy web concluído"
