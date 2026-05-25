@@ -113,6 +113,8 @@ CORS_ALLOWED_ORIGINS = env_list(
     ],
 )
 
+CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS", [])
+
 CORS_ALLOW_HEADERS = [
     "content-type",
     "authorization",
@@ -215,6 +217,9 @@ STATIC_URL = "/assets/"
 STATICFILES_DIRS = [
     Path(BASE_DIR).parent / "web" / "dist" / "assets",
 ]
+STATIC_ROOT = BASE_DIR / "staticfiles"
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
 
 
 
