@@ -1485,6 +1485,29 @@ class OperationsCalendarAPITests(TestCase):
         assignment = CalendarEmployeeAssignment.objects.get(employee=self.employee)
         self.assertEqual(assignment.default_position_id, position["id"])
 
+    def test_import_employees_uses_employee_operational_defaults_when_present(self):
+        self.employee.operational_category = "trainer"
+        self.employee.work_pattern = "manual"
+        self.employee.shift_type = "flexible"
+        self.employee.rotation_group = "C"
+        self.employee.five_two_off_days = [1, 2]
+        self.employee.save()
+        calendar = self._create_calendar()
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/import-employees/",
+            {"employee_ids": [self.employee.employee_id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        assignment = CalendarEmployeeAssignment.objects.get(employee=self.employee)
+        self.assertEqual(assignment.operational_category, "trainer")
+        self.assertEqual(assignment.work_pattern, "manual")
+        self.assertEqual(assignment.shift_type, "flexible")
+        self.assertEqual(assignment.rotation_group, "C")
+        self.assertEqual(assignment.five_two_off_days, [1, 2])
+
     def test_import_employees_write_permission_is_required(self):
         calendar = self._create_calendar()
         self.client.force_authenticate(self.consulta_user)

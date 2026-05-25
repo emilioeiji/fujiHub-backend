@@ -217,11 +217,11 @@ def import_calendar_employees(calendar, user, import_all=False, employee_ids=Non
             assignment = CalendarEmployeeAssignment.objects.create(
                 calendar=calendar,
                 employee=employee,
-                operational_category=_infer_operational_category(employee),
-                work_pattern=_infer_work_pattern(employee),
-                rotation_group="A",
-                shift_type=_infer_shift_type(employee),
-                five_two_off_days=DEFAULT_FIVE_TWO_OFF_DAYS.copy(),
+                operational_category=_employee_operational_category(employee),
+                work_pattern=_employee_work_pattern(employee),
+                rotation_group=_employee_rotation_group(employee),
+                shift_type=_employee_shift_type(employee),
+                five_two_off_days=_employee_five_two_off_days(employee),
                 default_position=_infer_default_position(calendar, employee),
                 start_date=month_start,
                 display_order=display_order,
@@ -279,6 +279,60 @@ def _infer_operational_category(employee):
     if _employee_has_any_keyword(employee, {"gl"}):
         return CalendarEmployeeAssignment.OperationalCategory.GL
     return CalendarEmployeeAssignment.OperationalCategory.NORMAL
+
+
+def _employee_work_pattern(employee):
+    candidate = (getattr(employee, "work_pattern", "") or "").strip()
+    allowed = {
+        CalendarEmployeeAssignment.WorkPattern.FOUR_TWO,
+        CalendarEmployeeAssignment.WorkPattern.FIVE_TWO,
+        CalendarEmployeeAssignment.WorkPattern.MANUAL,
+    }
+    if candidate in allowed:
+        return candidate
+    return _infer_work_pattern(employee)
+
+
+def _employee_shift_type(employee):
+    candidate = (getattr(employee, "shift_type", "") or "").strip()
+    allowed = {
+        CalendarEmployeeAssignment.ShiftType.DAY,
+        CalendarEmployeeAssignment.ShiftType.NIGHT,
+        CalendarEmployeeAssignment.ShiftType.FLEXIBLE,
+    }
+    if candidate in allowed:
+        return candidate
+    return _infer_shift_type(employee)
+
+
+def _employee_operational_category(employee):
+    candidate = (getattr(employee, "operational_category", "") or "").strip()
+    allowed = {choice for choice, _ in CalendarEmployeeAssignment.OperationalCategory.choices}
+    if candidate in allowed:
+        return candidate
+    return _infer_operational_category(employee)
+
+
+def _employee_rotation_group(employee):
+    candidate = (getattr(employee, "rotation_group", "") or "").strip()
+    if candidate in FOUR_TWO_GROUP_OFFSETS:
+        return candidate
+    return "A"
+
+
+def _employee_five_two_off_days(employee):
+    value = getattr(employee, "five_two_off_days", None)
+    if not isinstance(value, list):
+        return DEFAULT_FIVE_TWO_OFF_DAYS.copy()
+    normalized = []
+    for day in value:
+        try:
+            number = int(day)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= number <= 6:
+            normalized.append(number)
+    return normalized or DEFAULT_FIVE_TWO_OFF_DAYS.copy()
 
 
 def _employee_has_any_keyword(employee, keywords):

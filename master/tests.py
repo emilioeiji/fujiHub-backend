@@ -1,7 +1,9 @@
 from django.test import TestCase
+from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from accounts.models import Role, UserProfile
 from .models import (
     BillingRate,
     BuildingFloor,
@@ -34,6 +36,25 @@ from .models import (
 class MasterApiContractTests(TestCase):
     def setUp(self):
         self.client = APIClient()
+        user_model = get_user_model()
+        self.read_role, _ = Role.objects.get_or_create(
+            code="supervisor",
+            defaults={"name": "Supervisor"},
+        )
+        self.write_role, _ = Role.objects.get_or_create(
+            code="escritorio",
+            defaults={"name": "Escritorio"},
+        )
+        self.admin_role, _ = Role.objects.get_or_create(
+            code="admin",
+            defaults={"name": "Admin"},
+        )
+        self.supervisor_user = user_model.objects.create_user(username="supervisor", password="x")
+        self.escritorio_user = user_model.objects.create_user(username="escritorio", password="x")
+        self.no_role_user = user_model.objects.create_user(username="norole", password="x")
+        UserProfile.objects.create(user=self.supervisor_user, role=self.read_role)
+        UserProfile.objects.create(user=self.escritorio_user, role=self.write_role)
+        self.client.force_authenticate(self.escritorio_user)
         self.gender = Gender.objects.create(code="M", label_pt="Masculino", label_jp="男性")
         self.shift = Shift.objects.create(code="D", label_pt="Dia", label_jp="日勤")
         self.nationality = Nationality.objects.create(
@@ -108,6 +129,10 @@ class MasterApiContractTests(TestCase):
             months_elapsed=0,
             elapsed_str="1年0ヶ月",
             active_end_month=True,
+            operational_category="normal",
+            work_pattern="4x2",
+            shift_type="day",
+            rotation_group="A",
             manager_flag=False,
             view_flag=True,
         )
@@ -120,7 +145,16 @@ class MasterApiContractTests(TestCase):
         self.assertGreaterEqual(len(response.data), 1)
         self.assertTrue(expected_fields.issubset(response.data[0].keys()))
 
-    def test_reference_endpoints_list_contracts_are_public(self):
+    def assert_paginated_results(self, response):
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("count", response.data)
+        self.assertIn("next", response.data)
+        self.assertIn("previous", response.data)
+        self.assertIn("results", response.data)
+        self.assertIsInstance(response.data["results"], list)
+        return response.data["results"]
+
+    def test_reference_endpoints_list_contracts_are_authenticated(self):
         endpoints = [
             ("/api/genders/", {"id", "code", "label_pt", "label_jp"}),
             ("/api/shifts/", {"id", "code", "label_pt", "label_jp"}),
@@ -147,12 +181,11 @@ class MasterApiContractTests(TestCase):
         self.assertIn("label_pt", response.data)
         self.assertIn("label_jp", response.data)
 
-    def test_employee_list_contract_is_public(self):
+    def test_employee_list_contract_is_role_based(self):
         response = self.client.get("/api/employees/")
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIsInstance(response.data, list)
-        self.assertEqual(response.data[0]["employee_id"], "EMP001")
+        results = self.assert_paginated_results(response)
+        self.assertEqual(results[0]["employee_id"], "EMP001")
         self.assertTrue(
             {
                 "employee_id",
@@ -168,9 +201,14 @@ class MasterApiContractTests(TestCase):
                 "hire_type",
                 "entry_type",
                 "active_end_month",
+                "operational_category",
+                "work_pattern",
+                "shift_type",
+                "rotation_group",
+                "five_two_off_days",
                 "manager_flag",
                 "view_flag",
-            }.issubset(response.data[0].keys())
+            }.issubset(results[0].keys())
         )
 
     def test_employee_detail_contract_uses_employee_id_lookup(self):
@@ -183,6 +221,7 @@ class MasterApiContractTests(TestCase):
         self.assertEqual(response.data["process"], self.process.id)
         self.assertEqual(response.data["shift"], self.shift.id)
         self.assertEqual(response.data["building_floor"], self.building_floor.id)
+        self.assertIn("department_detail", response.data)
 
     def test_employee_create_contract_accepts_current_payload_shape(self):
         payload = {
@@ -211,6 +250,11 @@ class MasterApiContractTests(TestCase):
             "end_work": None,
             "retired": None,
             "active_end_month": True,
+            "operational_category": "trainer",
+            "work_pattern": "5x2",
+            "shift_type": "day",
+            "rotation_group": "B",
+            "five_two_off_days": [6, 0],
             "manager_flag": False,
             "view_flag": True,
         }
@@ -220,6 +264,7 @@ class MasterApiContractTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["employee_id"], "EMP002")
         self.assertEqual(response.data["department"], self.department.id)
+        self.assertEqual(response.data["work_pattern"], "5x2")
         self.assertTrue(Employee.objects.filter(employee_id="EMP002").exists())
 
     def test_employee_update_contract_accepts_patch(self):
@@ -232,6 +277,78 @@ class MasterApiContractTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["name_en"], "Taro Yamada Updated")
         self.assertFalse(response.data["active_end_month"])
+
+    def test_employee_list_filters_and_search(self):
+        Employee.objects.create(
+            employee_id="EMP777",
+            name_jp="別名",
+            name_en="Another User",
+            department=self.department,
+            operational_category="gl",
+            work_pattern="4x2",
+            active_end_month=False,
+        )
+
+        response = self.client.get("/api/employees/?search=Taro&active=true&operational_category=normal")
+        results = self.assert_paginated_results(response)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["employee_id"], "EMP001")
+
+    def test_employee_write_denied_for_user_without_role(self):
+        self.client.force_authenticate(self.no_role_user)
+        response = self.client.post(
+            "/api/employees/",
+            {
+                "employee_id": "EMP009",
+                "name_jp": "無権限",
+                "name_en": "No Role",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_read_allowed_for_supervisor(self):
+        self.client.force_authenticate(self.supervisor_user)
+        response = self.client.get("/api/employees/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_employee_pagination_respects_page_and_page_size(self):
+        for index in range(40):
+            Employee.objects.create(
+                employee_id=f"EMPX{index:03d}",
+                name_jp=f"名{index}",
+                name_en=f"Name {index}",
+            )
+
+        response = self.client.get("/api/employees/?page=2&page_size=10")
+        results = self.assert_paginated_results(response)
+        self.assertEqual(len(results), 10)
+        self.assertGreaterEqual(response.data["count"], 41)
+
+    def test_employee_pagination_enforces_page_size_limit(self):
+        response = self.client.get("/api/employees/?page_size=1000")
+        results = self.assert_paginated_results(response)
+        self.assertLessEqual(len(results), 100)
+
+    def test_employee_export_csv_uses_filters(self):
+        Employee.objects.create(
+            employee_id="EMP999",
+            name_jp="除外",
+            name_en="Filtered Out",
+            active_end_month=False,
+        )
+        response = self.client.get("/api/employees/export/?active=true&search=Taro")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("text/csv", response["Content-Type"])
+        self.assertIn("attachment; filename=", response["Content-Disposition"])
+        body = response.content.decode("utf-8-sig")
+        self.assertIn("EMP001", body)
+        self.assertNotIn("EMP999", body)
+
+    def test_employee_export_csv_denies_no_role(self):
+        self.client.force_authenticate(self.no_role_user)
+        response = self.client.get("/api/employees/export/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_employee_housing_create_and_list_contract(self):
         payload = {

@@ -83,9 +83,37 @@ class HireType(models.Model):
         return self.label_jp
 
 class Employee(models.Model):
+    class OperationalCategory(models.TextChoices):
+        NORMAL = "normal", "Normal"
+        RELIEF = "relief", "Relief"
+        TRAINEE = "trainee", "Trainee"
+        TRAINER = "trainer", "Trainer"
+        KL = "kl", "KL"
+        GL = "gl", "GL"
+        SUPERVISOR = "supervisor", "Supervisor"
+        MANAGER = "manager", "Manager"
+        STAFF = "staff", "Staff"
+
+    class WorkPattern(models.TextChoices):
+        FOUR_TWO = "4x2", "4x2"
+        FIVE_TWO = "5x2", "5x2"
+        MANUAL = "manual", "Manual"
+
+    class ShiftType(models.TextChoices):
+        DAY = "day", "Day"
+        NIGHT = "night", "Night"
+        FLEXIBLE = "flexible", "Flexible"
+
+    class RotationGroup(models.TextChoices):
+        A = "A", "A"
+        B = "B", "B"
+        C = "C", "C"
+
     employee_id = models.CharField(max_length=20, primary_key=True)  # 社員番号
     name_jp = models.CharField(max_length=100)                       # 和名
     name_en = models.CharField(max_length=100)                       # アルファベット名
+    nickname = models.CharField(max_length=100, blank=True)          # Apelido
+    organization_name = models.CharField(max_length=100, blank=True) # Organização/empresa
     joined_imc = models.DateField(null=True, blank=True)             # IMC入社日
     end_work = models.DateField(null=True, blank=True)               # 就労終了日
     retired = models.DateField(null=True, blank=True)                # 退職日
@@ -118,6 +146,31 @@ class Employee(models.Model):
     contract_type = models.CharField(max_length=20, blank=True)      # 契約区分
     manager_flag = models.BooleanField(default=False)                 # 管理者区分
     department = models.ForeignKey("master.Department", on_delete=models.SET_NULL, null=True, blank=True)        # 所属
+    operational_category = models.CharField(
+        max_length=20,
+        choices=OperationalCategory.choices,
+        default="",
+        blank=True,
+    )
+    work_pattern = models.CharField(
+        max_length=10,
+        choices=WorkPattern.choices,
+        default="",
+        blank=True,
+    )
+    shift_type = models.CharField(
+        max_length=20,
+        choices=ShiftType.choices,
+        default="",
+        blank=True,
+    )
+    rotation_group = models.CharField(
+        max_length=1,
+        choices=RotationGroup.choices,
+        blank=True,
+    )
+    five_two_off_days = models.JSONField(default=list, blank=True)
+    operational_memo = models.TextField(blank=True)
     ordia_number = models.CharField(max_length=50, blank=True)       # ORDIA番号
     dispatch_start = models.DateField(null=True, blank=True)         # 派遣就業開始日
     employee_cd = models.CharField(max_length=20, blank=True)        # 社員CD

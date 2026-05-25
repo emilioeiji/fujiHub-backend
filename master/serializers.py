@@ -70,6 +70,11 @@ class EmployeeHousingSerializer(serializers.ModelSerializer):
 
 # Employee
 class EmployeeSerializer(serializers.ModelSerializer):
+    department_detail = DepartmentSerializer(source="department", read_only=True)
+    process_detail = ProcessSerializer(source="process", read_only=True)
+    shift_detail = ShiftSerializer(source="shift", read_only=True)
+    building_floor_detail = BuildingFloorSerializer(source="building_floor", read_only=True)
+
     class Meta:
         model = Employee
         fields = "__all__"
@@ -82,3 +87,21 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "dispatch_start": {"allow_null": True, "required": False},
             "birth_date": {"allow_null": True, "required": False},
         }
+
+    def validate_five_two_off_days(self, value):
+        if value in (None, ""):
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Expected a list of weekdays.")
+
+        normalized = []
+        for day in value:
+            try:
+                number = int(day)
+            except (TypeError, ValueError):
+                raise serializers.ValidationError("Weekdays must be integers from 0 to 6.")
+            if number < 0 or number > 6:
+                raise serializers.ValidationError("Weekdays must be integers from 0 to 6.")
+            normalized.append(number)
+
+        return normalized
