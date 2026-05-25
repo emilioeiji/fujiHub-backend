@@ -44,6 +44,7 @@ Thumbs.db
 .env.local
 .env.*.local
 .envrc
+deploy/deploy.env
 
 # Coverage / testes
 .coverage
@@ -52,4 +53,3 @@ htmlcov/
 .pytest_cache/
 .tox/
 .mypy_cache/
-
