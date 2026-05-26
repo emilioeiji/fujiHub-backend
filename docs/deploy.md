@@ -2,6 +2,16 @@
 
 Este documento descreve o deploy robusto do FujiHub no servidor Ubuntu/Debian.
 
+## Arquitetura Final de Domínios
+
+- Web React: `https://hub.emilioeiji.com.br`
+- API Django: `https://api.emilioeiji.com.br`
+
+Importante:
+- O domínio `hub.emilioeiji.com.br` serve apenas o frontend.
+- A API não deve ser roteada por `hub`.
+- Se `/api` for chamado no `hub`, pode retornar HTML do React, e isso é esperado nessa arquitetura.
+
 Os scripts ficam dentro do repositório backend para permitir este fluxo no servidor:
 
 ```bash
@@ -49,7 +59,7 @@ WEB_BUILD_DIR=dist
 WEB_PUBLISH_DIR=/var/www/fujihub-web/dist
 VENV_DIR=/var/www/fujihub-api/venv
 FORCE_STRATEGY=stash
-VITE_API_URL=https://hub.emilioeiji.com.br
+VITE_API_URL=https://api.emilioeiji.com.br
 ```
 
 Se o backend roda via Apache/mod_wsgi e não existe um serviço systemd separado para Gunicorn/uWSGI, deixe:
@@ -70,7 +80,7 @@ FRONTEND_ASSETS_DIR=/var/www/fujihub-web/dist/assets
 
 Durante o deploy, os scripts também exportam esses valores automaticamente a partir de `WEB_PUBLISH_DIR` quando possível.
 
-Para Apache:
+Para Apache (recomendado no ambiente atual):
 
 ```bash
 WEB_SERVER_SERVICE=apache2
@@ -108,6 +118,7 @@ WEB_HEALTH_URL=https://fujihub.seu-dominio.com/
 ```
 
 Se não houver `/health/`, deixe `BACKEND_HEALTH_URL=` vazio. O script ainda executa `python manage.py check`.
+Observação: `https://api.emilioeiji.com.br/api/token/` pode retornar `405` para GET/HEAD, então não é ideal como health check HTTP simples.
 
 ## Deploy Seguro
 
@@ -207,6 +218,17 @@ Etapas executadas:
 11. Executa health check se `WEB_HEALTH_URL` estiver definido.
 
 ## Troubleshooting
+
+### API voltando HTML
+
+Se uma chamada de API voltar HTML, normalmente o frontend está apontando para o domínio web.
+
+Correto:
+- `VITE_API_URL=https://api.emilioeiji.com.br`
+- `EXPO_PUBLIC_API_URL=https://api.emilioeiji.com.br`
+
+Incorreto:
+- usar `https://hub.emilioeiji.com.br` como base da API.
 
 ### Git Pull Bloqueado
 

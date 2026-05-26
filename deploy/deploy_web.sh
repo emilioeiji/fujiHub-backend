@@ -113,7 +113,7 @@ update_repo() {
 
 validate_api_url() {
   if [[ -z "${VITE_API_URL:-}" ]]; then
-    die "VITE_API_URL está vazio. Configure deploy/deploy.env antes do build. Exemplo: VITE_API_URL=https://hub.emilioeiji.com.br"
+    die "VITE_API_URL está vazio. Configure deploy/deploy.env antes do build. Exemplo: VITE_API_URL=https://api.emilioeiji.com.br"
   fi
 
   if [[ "$VITE_API_URL" == *localhost* || "$VITE_API_URL" == *127.0.0.1* ]]; then
