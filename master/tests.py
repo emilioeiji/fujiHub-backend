@@ -1,5 +1,6 @@
 from django.test import TestCase
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -383,3 +384,142 @@ class MasterApiContractTests(TestCase):
                 "move_out_date",
             }.issubset(list_response.data[0].keys())
         )
+
+
+class EmployeeCsvImportTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        user_model = get_user_model()
+        self.write_role, _ = Role.objects.get_or_create(code="escritorio", defaults={"name": "Escritorio"})
+        self.read_role, _ = Role.objects.get_or_create(code="supervisor", defaults={"name": "Supervisor"})
+        self.writer_user = user_model.objects.create_user(username="writer", password="x")
+        self.reader_user = user_model.objects.create_user(username="reader", password="x")
+        UserProfile.objects.create(user=self.writer_user, role=self.write_role)
+        UserProfile.objects.create(user=self.reader_user, role=self.read_role)
+        self.client.force_authenticate(self.writer_user)
+
+        self.gender = Gender.objects.create(code="M", label_pt="Masculino", label_jp="男性")
+        self.shift = Shift.objects.create(code="D", label_pt="Dia", label_jp="日勤")
+        self.process = Process.objects.create(code="P001", label_pt="Proc", label_jp="工程1")
+        self.floor = BuildingFloor.objects.create(code="E2F4", label_pt="E2 4F", label_jp="E2棟4F")
+        self.department = Department.objects.create(code="DEP01", label_pt="Dep", label_jp="部署1")
+
+    def _csv_file(self, lines):
+        content = "\n".join(lines)
+        return SimpleUploadedFile(
+            "MT.csv",
+            content.encode("utf-8-sig"),
+            content_type="text/csv",
+        )
+
+    def test_import_preview_valid_csv(self):
+        csv_file = self._csv_file(
+            [
+                "社員番号,和名,アルファベット名,性別,シフト,工程,勤務棟-階,所属",
+                "7001321,山田太郎,Taro Yamada,男性,日勤,工程1,E2棟4F,DEP01",
+            ]
+        )
+        response = self.client.post("/api/employees/import-preview/", {"file": csv_file}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["total_rows"], 1)
+        self.assertEqual(response.data["creates"], 1)
+        self.assertEqual(response.data["updates"], 0)
+        self.assertEqual(response.data["unchanged"], 0)
+
+    def test_import_preview_employee_id_missing(self):
+        csv_file = self._csv_file(
+            [
+                "社員番号,和名,アルファベット名",
+                ",山田太郎,Taro Yamada",
+            ]
+        )
+        response = self.client.post("/api/employees/import-preview/", {"file": csv_file}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(len(response.data["errors"]), 1)
+
+    def test_import_commit_creates_new_employee(self):
+        csv_file = self._csv_file(
+            [
+                "社員番号,和名,アルファベット名,性別,シフト,工程,勤務棟-階,所属",
+                "7001402,佐藤花子,Hanako Sato,男性,日勤,工程1,E2棟4F,DEP01",
+            ]
+        )
+        response = self.client.post("/api/employees/import-commit/", {"file": csv_file}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["committed"])
+        self.assertTrue(Employee.objects.filter(employee_id="7001402").exists())
+
+    def test_import_commit_updates_existing_employee(self):
+        Employee.objects.create(employee_id="7001321", name_jp="旧名", name_en="Old Name", nickname="nick")
+        csv_file = self._csv_file(
+            [
+                "社員番号,和名,アルファベット名",
+                "7001321,新名,New Name",
+            ]
+        )
+        response = self.client.post("/api/employees/import-commit/", {"file": csv_file}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        employee = Employee.objects.get(employee_id="7001321")
+        self.assertEqual(employee.name_jp, "新名")
+        self.assertEqual(employee.name_en, "New Name")
+        self.assertEqual(employee.nickname, "nick")
+
+    def test_import_empty_fields_do_not_clear_existing_by_default(self):
+        Employee.objects.create(employee_id="7001321", name_jp="山田", name_en="Taro", notes="keep-me")
+        csv_file = self._csv_file(
+            [
+                "社員番号,和名,アルファベット名,備考",
+                "7001321,山田,Taro,",
+            ]
+        )
+        response = self.client.post("/api/employees/import-commit/", {"file": csv_file}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        employee = Employee.objects.get(employee_id="7001321")
+        self.assertEqual(employee.notes, "keep-me")
+
+    def test_import_maps_shift_process_building_floor_when_exists(self):
+        csv_file = self._csv_file(
+            [
+                "社員番号,和名,アルファベット名,シフト,工程,勤務棟-階",
+                "7001321,山田太郎,Taro Yamada,日勤,工程1,E2棟4F",
+            ]
+        )
+        response = self.client.post("/api/employees/import-commit/", {"file": csv_file}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        employee = Employee.objects.get(employee_id="7001321")
+        self.assertEqual(employee.shift_id, self.shift.id)
+        self.assertEqual(employee.process_id, self.process.id)
+        self.assertEqual(employee.building_floor_id, self.floor.id)
+
+    def test_import_warning_when_reference_missing(self):
+        csv_file = self._csv_file(
+            [
+                "社員番号,和名,アルファベット名,シフト",
+                "7001321,山田太郎,Taro Yamada,不存在",
+            ]
+        )
+        response = self.client.post("/api/employees/import-preview/", {"file": csv_file}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(len(response.data["warnings"]), 1)
+
+    def test_import_permission_denied_for_non_writer_role(self):
+        self.client.force_authenticate(self.reader_user)
+        csv_file = self._csv_file(
+            [
+                "社員番号,和名,アルファベット名",
+                "7001321,山田太郎,Taro Yamada",
+            ]
+        )
+        response = self.client.post("/api/employees/import-preview/", {"file": csv_file}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_import_csv_with_bom_works(self):
+        csv_file = self._csv_file(
+            [
+                "社員番号,和名,アルファベット名",
+                "7001321,山田太郎,Taro Yamada",
+            ]
+        )
+        response = self.client.post("/api/employees/import-preview/", {"file": csv_file}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["creates"], 1)
