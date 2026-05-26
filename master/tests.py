@@ -1,8 +1,11 @@
 from django.test import TestCase
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from rest_framework import status
 from rest_framework.test import APIClient
+from tempfile import NamedTemporaryFile
 
 from accounts.models import Role, UserProfile
 from .models import (
@@ -523,3 +526,65 @@ class EmployeeCsvImportTests(TestCase):
         response = self.client.post("/api/employees/import-preview/", {"file": csv_file}, format="multipart")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["creates"], 1)
+
+    def test_import_preview_real_mt_header_shape_is_accepted(self):
+        csv_file = self._csv_file(
+            [
+                '社員番号,和名,アルファベット名,IMC入社日,就労終了日,退職日,備考,性別区分,性別,シフト,統合職場CD,統合職場名,単価ランク,職場コード,職場略名,国籍,時給,新異入社日,勤続月数,請求単価,再入,FA入社日,生年月日,年齢,社内名,カナ名,工程,氏名CD(村田用),月末在職,勤務棟-階,経過年,経過月,契約区分,管理者区分,所属,ORDIA番号,派遣就業開始日,社員CD,事業所CD,総時給,経過年月,入社区分,閲覧,採用区分,,ICカード,IMCカード,"""=XLOOKUP(...)"',
+                "2010695,秋山 愛法,AINORI AKIYAMA,2014/08/07,,,,,男,日勤,97100,,5,,,,,7/8/2014,110,SONOTA,A,7/8/2014,11/8/1983,40,AKIYAMA AINORI,,工程1,FJ20574,,E2棟4F,9,1,0,,DEP01,64790,,2010695,2960,,9年1月,,1,,,2,904C571,",
+            ]
+        )
+        response = self.client.post("/api/employees/import-preview/", {"file": csv_file}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["total_rows"], 1)
+        self.assertEqual(response.data["creates"], 1)
+        self.assertEqual(len(response.data["errors"]), 0)
+        self.assertIn("detected_headers", response.data)
+
+    def test_import_preview_ignores_empty_and_unknown_headers(self):
+        csv_file = self._csv_file(
+            [
+                '社員番号,和名,アルファベット名,,UNKNOWN_COL,"""=XLOOKUP(...)"',
+                "7001321,山田太郎,Taro Yamada,,abc,formula",
+            ]
+        )
+        response = self.client.post("/api/employees/import-preview/", {"file": csv_file}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["creates"], 1)
+        self.assertEqual(len(response.data["errors"]), 0)
+
+
+class EmployeeCsvPreviewCommandTests(TestCase):
+    def setUp(self):
+        self.gender = Gender.objects.create(code="M", label_pt="Masculino", label_jp="男性")
+        self.shift = Shift.objects.create(code="D", label_pt="Dia", label_jp="日勤")
+        self.process = Process.objects.create(code="P001", label_pt="Proc", label_jp="工程1")
+        self.floor = BuildingFloor.objects.create(code="E2F4", label_pt="E2 4F", label_jp="E2棟4F")
+        self.department = Department.objects.create(code="DEP01", label_pt="Dep", label_jp="部署1")
+
+    def _write_temp_csv(self, lines):
+        tmp = NamedTemporaryFile("w", suffix=".csv", encoding="utf-8-sig", delete=False)
+        tmp.write("\n".join(lines))
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+
+    def test_preview_command_valid_csv(self):
+        path = self._write_temp_csv(
+            [
+                "社員番号,和名,アルファベット名,シフト,工程,勤務棟-階,所属",
+                "7001321,山田太郎,Taro Yamada,日勤,工程1,E2棟4F,DEP01",
+            ]
+        )
+        # Should not raise CommandError when no critical errors exist.
+        call_command("preview_employee_csv", path)
+
+    def test_preview_command_with_errors_raises_command_error(self):
+        path = self._write_temp_csv(
+            [
+                "社員番号,和名,アルファベット名",
+                ",,",
+            ]
+        )
+        with self.assertRaises(CommandError):
+            call_command("preview_employee_csv", path)

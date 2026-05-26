@@ -18,7 +18,14 @@ from .serializers import (
     RejoinedSerializer, ProcessSerializer, BuildingFloorSerializer,
     DepartmentSerializer, EntryTypeSerializer, HireTypeSerializer
 )
-from .csv_import import CSV_HEADERS, commit_employee_import, parse_employee_rows, preview_employee_import, read_csv_rows
+from .csv_import import (
+    CSV_HEADERS,
+    MAPPING_USED,
+    commit_employee_import,
+    parse_employee_rows,
+    preview_employee_import,
+    read_csv_rows,
+)
 
 
 class EmployeeViewSet(viewsets.ModelViewSet):
@@ -161,7 +168,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         update_empty = str(request.data.get("update_empty", "false")).strip().lower() in {"1", "true", "yes", "sim"}
 
         try:
-            rows = read_csv_rows(csv_file)
+            rows, detected_headers = read_csv_rows(csv_file)
             parsed_rows = parse_employee_rows(rows, update_empty=update_empty)
             preview = preview_employee_import(parsed_rows)
         except UnicodeDecodeError:
@@ -172,37 +179,11 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         return Response(
             {
                 **preview,
-                "mapping_used": {
-                    "社員番号": "employee_id",
-                    "社員CD": "employee_cd",
-                    "和名": "name_jp",
-                    "アルファベット名": "name_en",
-                    "社内名": "internal_name",
-                    "カナ名": "name_kana",
-                    "性別": "gender",
-                    "シフト": "shift",
-                    "工程": "process",
-                    "勤務棟-階": "building_floor",
-                    "所属": "department (fallback: organization_name)",
-                    "職場コード": "workplace_cd",
-                    "職場略名": "workplace_name",
-                    "統合職場CD": "site_cd",
-                    "統合職場名": "site_abbr",
-                    "単価ランク": "rank",
-                    "契約区分": "contract_type",
-                    "管理者区分": "manager_flag",
-                    "月末在職": "active_end_month",
-                    "IMC入社日": "joined_imc",
-                    "FA入社日": "joined_fa",
-                    "派遣就業開始日": "dispatch_start",
-                    "就労終了日": "end_work",
-                    "退職日": "retired",
-                    "ORDIA番号": "ordia_number",
-                    "ICカード": "ic_card",
-                    "IMCカード": "imc_card",
-                    "備考": "notes",
-                },
+                "mapping_used": MAPPING_USED,
                 "update_empty": update_empty,
+                "detected_headers": detected_headers,
+                "first_error_samples": preview.get("errors", [])[:10],
+                "first_warning_samples": preview.get("warnings", [])[:10],
             }
         )
 
@@ -215,7 +196,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         update_empty = str(request.data.get("update_empty", "false")).strip().lower() in {"1", "true", "yes", "sim"}
 
         try:
-            rows = read_csv_rows(csv_file)
+            rows, _detected_headers = read_csv_rows(csv_file)
             parsed_rows = parse_employee_rows(rows, update_empty=update_empty)
         except UnicodeDecodeError:
             return Response({"detail": "Invalid encoding. Use UTF-8 or UTF-8 BOM."}, status=400)

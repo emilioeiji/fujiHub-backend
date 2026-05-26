@@ -50,6 +50,37 @@ CSV_HEADERS = [
     "IMCカード",
 ]
 
+MAPPING_USED = {
+    "社員番号": "employee_id",
+    "社員CD": "employee_cd",
+    "和名": "name_jp",
+    "アルファベット名": "name_en",
+    "社内名": "internal_name",
+    "カナ名": "name_kana",
+    "性別": "gender",
+    "シフト": "shift",
+    "工程": "process",
+    "勤務棟-階": "building_floor",
+    "所属": "department (fallback: organization_name)",
+    "職場コード": "workplace_cd",
+    "職場略名": "workplace_name",
+    "統合職場CD": "site_cd",
+    "統合職場名": "site_abbr",
+    "単価ランク": "rank",
+    "契約区分": "contract_type",
+    "管理者区分": "manager_flag",
+    "月末在職": "active_end_month",
+    "IMC入社日": "joined_imc",
+    "FA入社日": "joined_fa",
+    "派遣就業開始日": "dispatch_start",
+    "就労終了日": "end_work",
+    "退職日": "retired",
+    "ORDIA番号": "ordia_number",
+    "ICカード": "ic_card",
+    "IMCカード": "imc_card",
+    "備考": "notes",
+}
+
 
 @dataclass
 class ParsedRow:
@@ -68,7 +99,14 @@ def _parse_date(value: str):
     value = _norm(value)
     if not value:
         return None
+    if value in {"1900/01/07", "1900-01-07", "7/1/1900", "07/01/1900"}:
+        return None
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
+        try:
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+    for fmt in ("%d/%m/%Y", "%m/%d/%Y"):
         try:
             return datetime.strptime(value, fmt).date()
         except ValueError:
@@ -90,7 +128,9 @@ def _parse_bool(value: str):
     value = _norm(value).lower()
     if not value:
         return None
-    truthy = {"1", "true", "yes", "sim", "y", "有", "在職", "on"}
+    if value in {"1900/01/07", "1900-01-07", "7/1/1900", "07/01/1900"}:
+        return None
+    truthy = {"1", "true", "yes", "sim", "y", "有", "在職", "on", "男", "女"}
     falsy = {"0", "false", "no", "nao", "não", "off", "無", "退職"}
     if value in truthy:
         return True
@@ -117,7 +157,24 @@ def read_csv_rows(uploaded_file):
     else:
         text = raw.decode("utf-8-sig")
     reader = csv.DictReader(io.StringIO(text))
-    return [{_norm(k): _norm(v) for k, v in row.items()} for row in reader]
+    headers = [
+        _norm(h)
+        for h in (reader.fieldnames or [])
+        if _norm(h) and "xlookup" not in _norm(h).casefold()
+    ]
+
+    rows = []
+    for row in reader:
+        normalized = {}
+        for key, value in row.items():
+            key_norm = _norm(key)
+            if not key_norm:
+                continue
+            if "xlookup" in key_norm.casefold():
+                continue
+            normalized[key_norm] = _norm(value)
+        rows.append(normalized)
+    return rows, headers
 
 
 def _set_if_allowed(payload, field, value, source_value, update_empty):
@@ -278,8 +335,8 @@ def preview_employee_import(parsed_rows):
             if changed_fields:
                 action = "update"
 
-        if action == "create" and (not row.payload.get("name_jp") or not row.payload.get("name_en")):
-            row_errors.append("Linhas novas exigem 和名 e アルファベット名.")
+        if action == "create" and (not row.payload.get("name_jp") and not row.payload.get("name_en")):
+            row_errors.append("Linha nova exige 和名 ou アルファベット名.")
 
         if row_errors:
             errors.append({"row": row.row_number, "employee_id": row.employee_id, "messages": row_errors})
@@ -345,6 +402,10 @@ def commit_employee_import(parsed_rows):
                 updated_ids.append(current.employee_id)
         else:
             new_data = {"employee_id": row.employee_id, **payload}
+            if not new_data.get("name_jp") and new_data.get("name_en"):
+                new_data["name_jp"] = new_data["name_en"]
+            if not new_data.get("name_en") and new_data.get("name_jp"):
+                new_data["name_en"] = new_data["name_jp"]
             employee = Employee.objects.create(**new_data)
             created_ids.append(employee.employee_id)
 
