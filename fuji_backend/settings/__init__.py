@@ -1,1 +1,3 @@
-from .dev import *  # noqa: F403
+
+# Settings package marker.
+# Do not import dev/prod here.
