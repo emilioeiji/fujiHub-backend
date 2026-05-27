@@ -463,3 +463,171 @@ class CalendarPrintPreset(BaseModel):
 
     def __str__(self):
         return f"{self.calendar} - {self.paper_size} {self.orientation}"
+
+
+class OperationCalendarTemplate(BaseModel):
+    name = models.CharField(max_length=150)
+    description = models.TextField(blank=True)
+    department = models.ForeignKey(
+        "master.Department",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="operation_calendar_templates",
+    )
+    process = models.ForeignKey(
+        "master.Process",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="operation_calendar_templates",
+    )
+    shift = models.ForeignKey(
+        "master.Shift",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="operation_calendar_templates",
+    )
+
+    class Meta:
+        ordering = ["name", "-updated_at", "-id"]
+
+    def __str__(self):
+        return self.name
+
+
+class OperationCalendarTemplateAssignment(BaseModel):
+    template = models.ForeignKey(
+        OperationCalendarTemplate,
+        on_delete=models.CASCADE,
+        related_name="assignments",
+    )
+    employee = models.ForeignKey(
+        "master.Employee",
+        on_delete=models.PROTECT,
+        related_name="operation_calendar_template_assignments",
+    )
+    operational_category = models.CharField(
+        max_length=30,
+        choices=CalendarEmployeeAssignment.OperationalCategory.choices,
+        default=CalendarEmployeeAssignment.OperationalCategory.NORMAL,
+    )
+    work_pattern = models.CharField(
+        max_length=10,
+        choices=CalendarEmployeeAssignment.WorkPattern.choices,
+        default=CalendarEmployeeAssignment.WorkPattern.FOUR_TWO,
+    )
+    rotation_group = models.CharField(
+        max_length=1,
+        choices=CalendarEmployeeAssignment.RotationGroup.choices,
+        blank=True,
+    )
+    shift_type = models.CharField(
+        max_length=10,
+        choices=CalendarEmployeeAssignment.ShiftType.choices,
+        default=CalendarEmployeeAssignment.ShiftType.DAY,
+    )
+    five_two_off_days = models.JSONField(default=list, blank=True)
+    default_position = models.ForeignKey(
+        OperationalPosition,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="template_default_assignments",
+    )
+    display_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["display_order", "employee_id", "id"]
+
+
+class OperationCalendarTemplateCell(BaseModel):
+    template = models.ForeignKey(
+        OperationCalendarTemplate,
+        on_delete=models.CASCADE,
+        related_name="cells",
+    )
+    template_assignment = models.ForeignKey(
+        OperationCalendarTemplateAssignment,
+        on_delete=models.CASCADE,
+        related_name="cells",
+    )
+    day = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(31)])
+    position = models.ForeignKey(
+        OperationalPosition,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="template_cells",
+    )
+    attendance_status = models.ForeignKey(
+        AttendanceStatus,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="template_cells",
+    )
+    work_time_code = models.ForeignKey(
+        WorkTimeCode,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="template_cells",
+    )
+    operational_code = models.ForeignKey(
+        OperationalCode,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="template_cells",
+    )
+    raw_value = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["template_assignment", "day", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["template_assignment", "day"],
+                name="unique_template_assignment_day",
+            ),
+        ]
+
+
+class OperationCalendarHistory(BaseModel):
+    class Source(models.TextChoices):
+        INLINE_EDIT = "inline_edit", "inline_edit"
+        QUICK_APPLY = "quick_apply", "quick_apply"
+        PASTE = "paste", "paste"
+        FILL_HANDLE = "fill_handle", "fill_handle"
+        PATTERN_4X2 = "pattern_4x2", "pattern_4x2"
+        TEMPLATE = "template", "template"
+        MONTH_DUPLICATION = "month_duplication", "month_duplication"
+        NEXT_MONTH_GENERATION = "next_month_generation", "next_month_generation"
+        SYSTEM = "system", "system"
+
+    calendar = models.ForeignKey(
+        MonthlyOperationCalendar,
+        on_delete=models.CASCADE,
+        related_name="history_entries",
+    )
+    assignment = models.ForeignKey(
+        CalendarEmployeeAssignment,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="history_entries",
+    )
+    cell_date = models.DateField(blank=True, null=True)
+    source = models.CharField(max_length=40, choices=Source.choices, default=Source.SYSTEM)
+    old_value = models.JSONField(blank=True, null=True)
+    new_value = models.JSONField(blank=True, null=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["calendar", "created_at"]),
+            models.Index(fields=["calendar", "source"]),
+            models.Index(fields=["calendar", "cell_date"]),
+        ]

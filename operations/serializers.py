@@ -14,6 +14,9 @@ from .models import (
     OperationalPosition,
     PositionDailyRequirement,
     RotationGroupStyle,
+    OperationCalendarTemplate,
+    OperationCalendarTemplateAssignment,
+    OperationCalendarHistory,
     WorkTimeCode,
 )
 
@@ -299,3 +302,123 @@ class CalendarPrintPresetSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class OperationCalendarTemplateAssignmentSerializer(serializers.ModelSerializer):
+    employee_detail = EmployeeSerializer(source="employee", read_only=True)
+
+    class Meta:
+        model = OperationCalendarTemplateAssignment
+        fields = [
+            "id",
+            "template",
+            "employee",
+            "employee_detail",
+            "operational_category",
+            "work_pattern",
+            "rotation_group",
+            "shift_type",
+            "five_two_off_days",
+            "default_position",
+            "display_order",
+        ]
+        read_only_fields = ["id", "template", "employee_detail"]
+
+
+class OperationCalendarTemplateSerializer(serializers.ModelSerializer):
+    department_detail = DepartmentSerializer(source="department", read_only=True)
+    process_detail = serializers.SerializerMethodField()
+    shift_detail = serializers.SerializerMethodField()
+    created_by_username = serializers.SerializerMethodField()
+    assignments_count = serializers.SerializerMethodField()
+    cells_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OperationCalendarTemplate
+        fields = [
+            "id",
+            "name",
+            "description",
+            "department",
+            "department_detail",
+            "process",
+            "process_detail",
+            "shift",
+            "shift_detail",
+            "created_by",
+            "created_by_username",
+            "is_active",
+            "assignments_count",
+            "cells_count",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "department_detail",
+            "process_detail",
+            "shift_detail",
+            "created_by",
+            "created_by_username",
+            "assignments_count",
+            "cells_count",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_process_detail(self, obj):
+        process = getattr(obj, "process", None)
+        if not process:
+            return None
+        return {"id": process.id, "code": process.code, "label_pt": process.label_pt, "label_jp": process.label_jp}
+
+    def get_shift_detail(self, obj):
+        shift = getattr(obj, "shift", None)
+        if not shift:
+            return None
+        return {"id": shift.id, "code": shift.code, "label_pt": shift.label_pt, "label_jp": shift.label_jp}
+
+    def get_created_by_username(self, obj):
+        return getattr(obj.created_by, "username", None)
+
+    def get_assignments_count(self, obj):
+        return obj.assignments.count()
+
+    def get_cells_count(self, obj):
+        return obj.cells.count()
+
+
+class OperationCalendarHistorySerializer(serializers.ModelSerializer):
+    assignment_employee_id = serializers.SerializerMethodField()
+    assignment_employee_name = serializers.SerializerMethodField()
+    updated_by_username = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OperationCalendarHistory
+        fields = [
+            "id",
+            "calendar",
+            "assignment",
+            "assignment_employee_id",
+            "assignment_employee_name",
+            "cell_date",
+            "source",
+            "old_value",
+            "new_value",
+            "metadata",
+            "updated_by",
+            "updated_by_username",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_assignment_employee_id(self, obj):
+        employee = getattr(obj.assignment, "employee", None)
+        return getattr(employee, "employee_id", None)
+
+    def get_assignment_employee_name(self, obj):
+        employee = getattr(obj.assignment, "employee", None)
+        return getattr(employee, "name_en", None) or getattr(employee, "internal_name", None) or getattr(employee, "name_jp", None)
+
+    def get_updated_by_username(self, obj):
+        return getattr(obj.updated_by, "username", None)

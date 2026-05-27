@@ -7,6 +7,7 @@ from .views import (
     MonthlyOperationCalendarViewSet,
     OperationalCodeViewSet,
     OperationalPositionViewSet,
+    OperationCalendarTemplateViewSet,
     RotationGroupStyleViewSet,
     WorkTimeCodeViewSet,
 )
@@ -21,6 +22,7 @@ router.register("rotation-group-styles", RotationGroupStyleViewSet, basename="op
 router.register("visual-categories", EmployeeVisualCategoryViewSet, basename="operations-visual-categories")
 router.register("operational-codes", OperationalCodeViewSet, basename="operations-operational-codes")
 router.register("calendars", MonthlyOperationCalendarViewSet, basename="operations-calendars")
+router.register("calendar-templates", OperationCalendarTemplateViewSet, basename="operations-calendar-templates")
 
 urlpatterns = [
     path("", include(router.urls)),

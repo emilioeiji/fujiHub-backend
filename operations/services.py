@@ -198,21 +198,28 @@ def import_calendar_employees(calendar, user, import_all=False, employee_ids=Non
     employee_ids = employee_ids or []
     existing_employee_ids = set(calendar.assignments.values_list("employee_id", flat=True))
 
-    candidates = _calendar_employee_candidates(calendar, import_all=import_all, employee_ids=employee_ids)
+    preview = preview_calendar_employee_candidates(calendar, import_all=import_all, employee_ids=employee_ids)
+    candidate_ids = [item["employee_id"] for item in preview["candidates"]]
+    candidates = (
+        Employee.objects.filter(employee_id__in=candidate_ids)
+        .select_related("process", "building_floor", "hire_type", "entry_type", "shift")
+        .order_by("employee_id")
+    )
     display_order = calendar.assignments.aggregate(max_order=Max("display_order"))["max_order"] or 0
     result = {
         "created": 0,
-        "skipped": 0,
-        "total_candidates": candidates.count(),
+        "skipped": len(preview["already_linked"]),
+        "total_candidates": len(candidate_ids),
+        "ignored_count": len(preview["ignored"]),
+        "ignored": preview["ignored"],
+        "already_linked_count": len(preview["already_linked"]),
+        "already_linked": preview["already_linked"],
+        "scope": preview["scope"],
         "assignments": [],
     }
 
     with transaction.atomic():
         for employee in candidates:
-            if employee.employee_id in existing_employee_ids:
-                result["skipped"] += 1
-                continue
-
             display_order += 1
             assignment = CalendarEmployeeAssignment.objects.create(
                 calendar=calendar,
@@ -235,18 +242,137 @@ def import_calendar_employees(calendar, user, import_all=False, employee_ids=Non
     return result
 
 
-def _calendar_employee_candidates(calendar, import_all=False, employee_ids=None):
-    queryset = Employee.objects.filter(
+def sync_calendar_assignments_from_master(calendar, user):
+    assignments = calendar.assignments.select_related("employee").order_by("display_order", "employee_id", "id")
+    result = {"updated": 0, "unchanged": 0, "skipped": 0, "assignments": []}
+
+    with transaction.atomic():
+        for assignment in assignments:
+            employee = assignment.employee
+            if not employee or not employee.active_end_month or employee.retired or employee.end_work:
+                result["skipped"] += 1
+                result["assignments"].append({"assignment": assignment.id, "status": "skipped", "reason": "inactive"})
+                continue
+
+            updates = {
+                "operational_category": _employee_operational_category(employee),
+                "work_pattern": _employee_work_pattern(employee),
+                "rotation_group": _employee_rotation_group(employee),
+                "shift_type": _employee_shift_type(employee),
+                "five_two_off_days": _employee_five_two_off_days(employee),
+                "default_position": _infer_default_position(calendar, employee),
+            }
+            changed = False
+            for field, value in updates.items():
+                current = getattr(assignment, field)
+                if field == "default_position":
+                    if getattr(current, "id", None) != getattr(value, "id", None):
+                        changed = True
+                        setattr(assignment, field, value)
+                elif current != value:
+                    changed = True
+                    setattr(assignment, field, value)
+
+            if changed:
+                assignment.updated_by = user
+                assignment.save(
+                    update_fields=[
+                        "operational_category",
+                        "work_pattern",
+                        "rotation_group",
+                        "shift_type",
+                        "five_two_off_days",
+                        "default_position",
+                        "updated_by",
+                        "updated_at",
+                    ]
+                )
+                result["updated"] += 1
+                result["assignments"].append({"assignment": assignment.id, "status": "updated"})
+            else:
+                result["unchanged"] += 1
+                result["assignments"].append({"assignment": assignment.id, "status": "unchanged"})
+
+    return result
+
+
+def preview_calendar_employee_candidates(calendar, import_all=False, employee_ids=None):
+    employee_ids = employee_ids or []
+    existing_employee_ids = set(calendar.assignments.values_list("employee_id", flat=True))
+    base_queryset = Employee.objects.filter(
         department=calendar.department,
-        active_end_month=True,
-        retired__isnull=True,
-        end_work__isnull=True,
-    ).select_related("process", "building_floor", "hire_type", "entry_type")
+    ).select_related("process", "building_floor", "hire_type", "entry_type", "shift")
 
-    if import_all:
-        return queryset.order_by("employee_id")
+    if not import_all:
+        base_queryset = base_queryset.filter(employee_id__in=employee_ids)
 
-    return queryset.filter(employee_id__in=employee_ids or []).order_by("employee_id")
+    candidates = []
+    ignored = []
+    already_linked = []
+    for employee in base_queryset.order_by("employee_id"):
+        if employee.employee_id in existing_employee_ids:
+            already_linked.append(
+                {
+                    "employee_id": employee.employee_id,
+                    "name": employee.name_en or employee.internal_name or employee.name_jp or "",
+                    "reason": "already_linked",
+                }
+            )
+            continue
+        valid, reason = _employee_matches_calendar_scope(employee, calendar)
+        row = {
+            "employee_id": employee.employee_id,
+            "name": employee.name_en or employee.internal_name or employee.name_jp or "",
+            "shift": getattr(employee.shift, "code", None),
+            "process": getattr(employee.process, "code", None),
+            "shift_type": _employee_shift_type(employee),
+            "rotation_group": _employee_rotation_group(employee),
+            "work_pattern": _employee_work_pattern(employee),
+            "operational_category": _employee_operational_category(employee),
+        }
+        default_position = _infer_default_position(calendar, employee)
+        if default_position:
+            row["default_position"] = default_position.id
+            row["default_position_code"] = default_position.code
+        if valid:
+            candidates.append(row)
+        else:
+            row["reason"] = reason
+            ignored.append(row)
+
+    return {
+        "scope": {
+            "department": getattr(calendar.department, "code", None) if calendar.department_id else None,
+            "process": getattr(calendar.process, "code", None) if calendar.process_id else None,
+            "shift": getattr(calendar.shift, "code", None) if calendar.shift_id else None,
+        },
+        "total_base": base_queryset.count(),
+        "total_candidates": len(candidates),
+        "total_already_linked": len(already_linked),
+        "total_ignored": len(ignored),
+        "candidates": candidates,
+        "already_linked": already_linked,
+        "ignored": ignored,
+    }
+
+
+def _employee_matches_calendar_scope(employee, calendar):
+    if not employee.active_end_month or employee.retired or employee.end_work:
+        return False, "inactive"
+
+    if calendar.process_id:
+        if not employee.process_id:
+            return False, "missing_employee_process"
+        if employee.process_id != calendar.process_id:
+            return False, "different_process"
+
+    if calendar.shift_id:
+        if not employee.shift_id:
+            return False, "missing_employee_shift"
+        if employee.shift_id != calendar.shift_id:
+            return False, "different_shift"
+
+    return True, ""
 
 
 def _infer_work_pattern(employee):
