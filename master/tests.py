@@ -527,6 +527,20 @@ class EmployeeCsvImportTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["creates"], 1)
 
+    def test_import_commit_ignores_placeholder_dates_for_boolean_fields(self):
+        csv_file = self._csv_file(
+            [
+                "社員番号,和名,アルファベット名,管理者区分,月末在職,閲覧",
+                "7001321,山田太郎,Taro Yamada,1900/01/07,1900/01/07,1900/01/07",
+            ]
+        )
+        response = self.client.post("/api/employees/import-commit/", {"file": csv_file}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        employee = Employee.objects.get(employee_id="7001321")
+        self.assertFalse(employee.manager_flag)
+        self.assertFalse(employee.active_end_month)
+        self.assertFalse(employee.view_flag)
+
     def test_import_preview_real_mt_header_shape_is_accepted(self):
         csv_file = self._csv_file(
             [

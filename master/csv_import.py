@@ -183,6 +183,14 @@ def _set_if_allowed(payload, field, value, source_value, update_empty):
     payload[field] = value
 
 
+def _set_bool_if_allowed(payload, field, value, source_value, update_empty):
+    if value is None:
+        if update_empty and _norm(source_value) == "":
+            payload[field] = False
+        return
+    payload[field] = value
+
+
 def parse_employee_rows(rows, update_empty=False):
     gender_lookup = _build_lookup(Gender)
     shift_lookup = _build_lookup(Shift)
@@ -260,7 +268,7 @@ def parse_employee_rows(rows, update_empty=False):
             if parsed_bool == "__INVALID_BOOL__":
                 warnings.append(f"{csv_name}: valor não reconhecido ({source}), mantendo valor atual.")
                 continue
-            _set_if_allowed(payload, model_field, parsed_bool, source, update_empty)
+            _set_bool_if_allowed(payload, model_field, parsed_bool, source, update_empty)
 
         for csv_name, model_field, lookup in [
             ("性別", "gender", gender_lookup),
