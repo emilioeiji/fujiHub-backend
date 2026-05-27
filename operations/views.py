@@ -27,6 +27,9 @@ from .models import (
     OperationCalendarTemplateCell,
     OperationCalendarHistory,
     PositionDailyRequirement,
+    HikitsuguiOccurrenceCategory,
+    HikitsuguiReport,
+    HikitsuguiItem,
     RotationGroupStyle,
     WorkTimeCode,
 )
@@ -42,6 +45,9 @@ from .serializers import (
     OperationCalendarTemplateSerializer,
     OperationCalendarHistorySerializer,
     PositionDailyRequirementSerializer,
+    HikitsuguiOccurrenceCategorySerializer,
+    HikitsuguiReportSerializer,
+    HikitsuguiItemSerializer,
     RotationGroupStyleSerializer,
     WorkTimeCodeSerializer,
 )
@@ -129,6 +135,73 @@ class OperationCalendarTemplateViewSet(ActorMixin, viewsets.ModelViewSet):
             queryset = queryset.filter(process_id=process)
         if shift:
             queryset = queryset.filter(shift_id=shift)
+        return queryset
+
+
+class HikitsuguiOccurrenceCategoryViewSet(ActorMixin, viewsets.ModelViewSet):
+    queryset = HikitsuguiOccurrenceCategory.objects.all()
+    serializer_class = HikitsuguiOccurrenceCategorySerializer
+    permission_classes = [OperationsCalendarPermission]
+
+
+class HikitsuguiReportViewSet(ActorMixin, viewsets.ModelViewSet):
+    queryset = HikitsuguiReport.objects.select_related(
+        "calendar",
+        "shift",
+        "process",
+        "responsible_employee",
+        "responsible_assignment",
+    ).prefetch_related("items", "items__category")
+    serializer_class = HikitsuguiReportSerializer
+    permission_classes = [OperationsCalendarPermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        params = self.request.query_params
+        calendar = params.get("calendar")
+        shift = params.get("shift")
+        process = params.get("process")
+        status_param = params.get("status")
+        priority = params.get("priority")
+        date_from = params.get("date_from")
+        date_to = params.get("date_to")
+        responsible_employee = params.get("responsible_employee")
+        if calendar:
+            queryset = queryset.filter(calendar_id=calendar)
+        if shift:
+            queryset = queryset.filter(shift_id=shift)
+        if process:
+            queryset = queryset.filter(process_id=process)
+        if status_param:
+            queryset = queryset.filter(status=status_param)
+        if priority:
+            queryset = queryset.filter(priority=priority)
+        if date_from:
+            queryset = queryset.filter(report_date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(report_date__lte=date_to)
+        if responsible_employee:
+            queryset = queryset.filter(responsible_employee_id=responsible_employee)
+        return queryset
+
+
+class HikitsuguiItemViewSet(ActorMixin, viewsets.ModelViewSet):
+    queryset = HikitsuguiItem.objects.select_related("report", "category", "responsible_employee")
+    serializer_class = HikitsuguiItemSerializer
+    permission_classes = [OperationsCalendarPermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        params = self.request.query_params
+        report = params.get("report")
+        status_param = params.get("status")
+        priority = params.get("priority")
+        if report:
+            queryset = queryset.filter(report_id=report)
+        if status_param:
+            queryset = queryset.filter(status=status_param)
+        if priority:
+            queryset = queryset.filter(priority=priority)
         return queryset
 
 

@@ -17,6 +17,9 @@ from .models import (
     OperationCalendarTemplate,
     OperationCalendarTemplateAssignment,
     OperationCalendarHistory,
+    HikitsuguiOccurrenceCategory,
+    HikitsuguiReport,
+    HikitsuguiItem,
     WorkTimeCode,
 )
 from .services import get_operational_rank, get_visual_category_from_master
@@ -468,3 +471,107 @@ class OperationCalendarHistorySerializer(serializers.ModelSerializer):
 
     def get_updated_by_username(self, obj):
         return getattr(obj.updated_by, "username", None)
+
+
+class HikitsuguiOccurrenceCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HikitsuguiOccurrenceCategory
+        fields = [
+            "id",
+            "code",
+            "label_pt",
+            "label_jp",
+            "description",
+            "display_order",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class HikitsuguiItemSerializer(serializers.ModelSerializer):
+    category_detail = HikitsuguiOccurrenceCategorySerializer(source="category", read_only=True)
+    responsible_employee_detail = EmployeeSerializer(source="responsible_employee", read_only=True)
+
+    class Meta:
+        model = HikitsuguiItem
+        fields = [
+            "id",
+            "report",
+            "category",
+            "category_detail",
+            "title",
+            "description",
+            "action_taken",
+            "pending_for_next_shift",
+            "responsible_employee",
+            "responsible_employee_detail",
+            "status",
+            "priority",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "category_detail", "responsible_employee_detail", "created_at", "updated_at"]
+
+
+class HikitsuguiReportSerializer(serializers.ModelSerializer):
+    calendar_detail = MonthlyOperationCalendarSerializer(source="calendar", read_only=True)
+    responsible_employee_detail = EmployeeSerializer(source="responsible_employee", read_only=True)
+    responsible_assignment_detail = CalendarEmployeeAssignmentSerializer(source="responsible_assignment", read_only=True)
+    items = HikitsuguiItemSerializer(many=True, read_only=True)
+    open_items_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HikitsuguiReport
+        fields = [
+            "id",
+            "calendar",
+            "calendar_detail",
+            "report_date",
+            "shift",
+            "process",
+            "area_equipment",
+            "responsible_employee",
+            "responsible_employee_detail",
+            "responsible_assignment",
+            "responsible_assignment_detail",
+            "status",
+            "priority",
+            "description",
+            "action_taken",
+            "pending_for_next_shift",
+            "items",
+            "open_items_count",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "calendar_detail",
+            "responsible_employee_detail",
+            "responsible_assignment_detail",
+            "items",
+            "open_items_count",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate(self, attrs):
+        instance = self.instance
+        calendar = attrs.get("calendar", getattr(instance, "calendar", None))
+        responsible_assignment = attrs.get("responsible_assignment", getattr(instance, "responsible_assignment", None))
+        responsible_employee = attrs.get("responsible_employee", getattr(instance, "responsible_employee", None))
+
+        if responsible_assignment and calendar and responsible_assignment.calendar_id != calendar.id:
+            raise serializers.ValidationError({"responsible_assignment": "Assignment não pertence ao calendário informado."})
+
+        if responsible_assignment and responsible_employee and responsible_assignment.employee_id != responsible_employee.employee_id:
+            raise serializers.ValidationError({"responsible_employee": "Funcionário precisa ser o mesmo do assignment selecionado."})
+
+        return attrs
+
+    def get_open_items_count(self, obj):
+        return obj.items.exclude(status=HikitsuguiItem.Status.RESOLVED).count()

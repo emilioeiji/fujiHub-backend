@@ -10,6 +10,9 @@ from .models import (
     OperationalCode,
     OperationalPosition,
     PositionDailyRequirement,
+    HikitsuguiOccurrenceCategory,
+    HikitsuguiReport,
+    HikitsuguiItem,
     RotationGroupStyle,
     WorkTimeCode,
 )
@@ -173,3 +176,30 @@ class PositionDailyRequirementAdmin(admin.ModelAdmin):
 class CalendarPrintPresetAdmin(admin.ModelAdmin):
     list_display = ("calendar", "paper_size", "orientation", "scale_percent", "show_colors", "is_active")
     list_filter = ("paper_size", "orientation", "show_colors", "is_active")
+
+
+@admin.register(HikitsuguiOccurrenceCategory)
+class HikitsuguiOccurrenceCategoryAdmin(admin.ModelAdmin):
+    list_display = ("code", "label_pt", "label_jp", "display_order", "is_active")
+    list_filter = ("is_active",)
+    search_fields = ("code", "label_pt", "label_jp")
+
+
+class HikitsuguiItemInline(admin.TabularInline):
+    model = HikitsuguiItem
+    extra = 0
+
+
+@admin.register(HikitsuguiReport)
+class HikitsuguiReportAdmin(admin.ModelAdmin):
+    list_display = ("report_date", "shift", "process", "area_equipment", "status", "priority", "responsible_employee", "is_active")
+    list_filter = ("status", "priority", "shift", "process", "calendar", "is_active")
+    search_fields = ("area_equipment", "description", "pending_for_next_shift", "responsible_employee__employee_id")
+    inlines = [HikitsuguiItemInline]
+
+
+@admin.register(HikitsuguiItem)
+class HikitsuguiItemAdmin(admin.ModelAdmin):
+    list_display = ("report", "title", "category", "status", "priority", "responsible_employee", "is_active")
+    list_filter = ("status", "priority", "category", "is_active")
+    search_fields = ("title", "description", "action_taken", "pending_for_next_shift")

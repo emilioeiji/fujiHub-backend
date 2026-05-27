@@ -631,3 +631,133 @@ class OperationCalendarHistory(BaseModel):
             models.Index(fields=["calendar", "source"]),
             models.Index(fields=["calendar", "cell_date"]),
         ]
+
+
+class HikitsuguiOccurrenceCategory(BaseModel):
+    code = models.SlugField(max_length=50, unique=True)
+    label_pt = models.CharField(max_length=100)
+    label_jp = models.CharField(max_length=100, blank=True)
+    description = models.TextField(blank=True)
+    display_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["display_order", "code"]
+
+    def __str__(self):
+        return self.label_pt or self.code
+
+
+class HikitsuguiReport(BaseModel):
+    class Status(models.TextChoices):
+        OPEN = "open", "Aberto"
+        IN_PROGRESS = "in_progress", "Em andamento"
+        RESOLVED = "resolved", "Resolvido"
+        PENDING = "pending", "Pendente"
+
+    class Priority(models.TextChoices):
+        LOW = "low", "Baixa"
+        NORMAL = "normal", "Normal"
+        HIGH = "high", "Alta"
+        CRITICAL = "critical", "Crítica"
+
+    calendar = models.ForeignKey(
+        MonthlyOperationCalendar,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="hikitsugui_reports",
+    )
+    report_date = models.DateField()
+    shift = models.ForeignKey(
+        "master.Shift",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="hikitsugui_reports",
+    )
+    process = models.ForeignKey(
+        "master.Process",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="hikitsugui_reports",
+    )
+    area_equipment = models.CharField(max_length=150)
+    responsible_employee = models.ForeignKey(
+        "master.Employee",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="hikitsugui_reports",
+    )
+    responsible_assignment = models.ForeignKey(
+        CalendarEmployeeAssignment,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="hikitsugui_reports",
+    )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.OPEN)
+    priority = models.CharField(max_length=20, choices=Priority.choices, default=Priority.NORMAL)
+    description = models.TextField()
+    action_taken = models.TextField(blank=True)
+    pending_for_next_shift = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-report_date", "-updated_at", "-id"]
+        indexes = [
+            models.Index(fields=["report_date", "shift", "process"]),
+            models.Index(fields=["status", "priority"]),
+        ]
+
+    def __str__(self):
+        return f"{self.report_date} - {self.area_equipment}"
+
+
+class HikitsuguiItem(BaseModel):
+    class Status(models.TextChoices):
+        OPEN = "open", "Aberto"
+        IN_PROGRESS = "in_progress", "Em andamento"
+        RESOLVED = "resolved", "Resolvido"
+        PENDING = "pending", "Pendente"
+
+    class Priority(models.TextChoices):
+        LOW = "low", "Baixa"
+        NORMAL = "normal", "Normal"
+        HIGH = "high", "Alta"
+        CRITICAL = "critical", "Crítica"
+
+    report = models.ForeignKey(
+        HikitsuguiReport,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    category = models.ForeignKey(
+        HikitsuguiOccurrenceCategory,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="items",
+    )
+    title = models.CharField(max_length=150)
+    description = models.TextField(blank=True)
+    action_taken = models.TextField(blank=True)
+    pending_for_next_shift = models.TextField(blank=True)
+    responsible_employee = models.ForeignKey(
+        "master.Employee",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="hikitsugui_items",
+    )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.OPEN)
+    priority = models.CharField(max_length=20, choices=Priority.choices, default=Priority.NORMAL)
+
+    class Meta:
+        ordering = ["-updated_at", "-id"]
+        indexes = [
+            models.Index(fields=["report", "status", "priority"]),
+        ]
+
+    def __str__(self):
+        return self.title

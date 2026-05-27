@@ -28,6 +28,7 @@ from .models import (
     PositionDailyRequirement,
     RotationGroupStyle,
     WorkTimeCode,
+    HikitsuguiOccurrenceCategory,
 )
 
 
@@ -139,6 +140,20 @@ class OperationsCalendarModelTests(TestCase):
             "vaccine",
         }
         self.assertTrue(expected.issubset(set(OperationalCode.objects.values_list("code", flat=True))))
+
+    def test_initial_hikitsugui_categories_seeds_are_created(self):
+        expected = {
+            "seguranca",
+            "qualidade",
+            "equipamento",
+            "material",
+            "pessoal",
+            "producao",
+            "manutencao",
+            "5s",
+            "outros",
+        }
+        self.assertTrue(expected.issubset(set(HikitsuguiOccurrenceCategory.objects.values_list("code", flat=True))))
 
     def test_create_operational_position(self):
         position = self._create_position()

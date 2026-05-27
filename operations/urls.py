@@ -4,6 +4,9 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     AttendanceStatusViewSet,
     EmployeeVisualCategoryViewSet,
+    HikitsuguiItemViewSet,
+    HikitsuguiOccurrenceCategoryViewSet,
+    HikitsuguiReportViewSet,
     MonthlyOperationCalendarViewSet,
     OperationalCodeViewSet,
     OperationalPositionViewSet,
@@ -23,6 +26,9 @@ router.register("visual-categories", EmployeeVisualCategoryViewSet, basename="op
 router.register("operational-codes", OperationalCodeViewSet, basename="operations-operational-codes")
 router.register("calendars", MonthlyOperationCalendarViewSet, basename="operations-calendars")
 router.register("calendar-templates", OperationCalendarTemplateViewSet, basename="operations-calendar-templates")
+router.register("hikitsugui-categories", HikitsuguiOccurrenceCategoryViewSet, basename="operations-hikitsugui-categories")
+router.register("hikitsugui-reports", HikitsuguiReportViewSet, basename="operations-hikitsugui-reports")
+router.register("hikitsugui-items", HikitsuguiItemViewSet, basename="operations-hikitsugui-items")
 
 urlpatterns = [
     path("", include(router.urls)),
