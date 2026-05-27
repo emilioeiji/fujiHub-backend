@@ -19,6 +19,7 @@ from .models import (
     OperationCalendarHistory,
     WorkTimeCode,
 )
+from .services import get_operational_rank, get_visual_category_from_master
 
 
 class OperationalPositionSerializer(serializers.ModelSerializer):
@@ -190,6 +191,11 @@ class MonthlyOperationCalendarSerializer(serializers.ModelSerializer):
 
 class CalendarEmployeeAssignmentSerializer(serializers.ModelSerializer):
     employee_detail = EmployeeSerializer(source="employee", read_only=True)
+    billing_rate = serializers.SerializerMethodField()
+    process = serializers.SerializerMethodField()
+    category_rank = serializers.SerializerMethodField()
+    category_label = serializers.SerializerMethodField()
+    visual_category = serializers.SerializerMethodField()
 
     class Meta:
         model = CalendarEmployeeAssignment
@@ -199,6 +205,11 @@ class CalendarEmployeeAssignmentSerializer(serializers.ModelSerializer):
             "employee",
             "employee_detail",
             "operational_category",
+            "billing_rate",
+            "process",
+            "category_rank",
+            "category_label",
+            "visual_category",
             "work_pattern",
             "rotation_group",
             "shift_type",
@@ -213,6 +224,41 @@ class CalendarEmployeeAssignmentSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "calendar", "employee_detail", "created_at", "updated_at"]
+
+    def get_billing_rate(self, obj):
+        billing = getattr(getattr(obj, "employee", None), "billing_rate", None)
+        if not billing:
+            return None
+        return {"id": billing.id, "code": billing.code, "label_pt": billing.label_pt, "label_jp": billing.label_jp}
+
+    def get_process(self, obj):
+        process = getattr(getattr(obj, "employee", None), "process", None)
+        if not process:
+            return None
+        return {"id": process.id, "code": process.code, "label_pt": process.label_pt, "label_jp": process.label_jp}
+
+    def get_category_rank(self, obj):
+        return get_operational_rank(obj)
+
+    def get_category_label(self, obj):
+        category = (obj.operational_category or "").strip().lower()
+        labels = {
+            "normal": "Normal",
+            "koutei_leader": "Koutei Leader",
+            "relief": "Relief",
+            "trainer": "Trainer",
+            "gl": "GL",
+            "supervisor": "Supervisor",
+            "manager": "Manager",
+            "director": "Director",
+        }
+        return labels.get(category, "Outro")
+
+    def get_visual_category(self, obj):
+        employee = getattr(obj, "employee", None)
+        if not employee:
+            return "normal"
+        return get_visual_category_from_master(employee)
 
 
 class CalendarDayCellSerializer(serializers.ModelSerializer):

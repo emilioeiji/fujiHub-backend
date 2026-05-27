@@ -1,4 +1,5 @@
 import csv
+from calendar import monthrange
 from datetime import datetime, timedelta
 from io import StringIO
 
@@ -48,6 +49,7 @@ from .services import (
     build_calendar_cell_parser_context,
     calculate_cell_work_minutes,
     generate_calendar_schedule,
+    get_assignment_sort_key,
     import_calendar_employees,
     preview_calendar_employee_candidates,
     parse_calendar_cell_value,
@@ -135,12 +137,20 @@ class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
     serializer_class = MonthlyOperationCalendarSerializer
     permission_classes = [OperationsCalendarPermission]
 
+    def _ordered_assignments_queryset(self, calendar):
+        queryset = calendar.assignments.select_related(
+            "employee",
+            "employee__process",
+            "employee__billing_rate",
+        )
+        return sorted(queryset, key=get_assignment_sort_key)
+
     @action(detail=True, methods=["get", "post"])
     def assignments(self, request, pk=None):
         calendar = self.get_object()
 
         if request.method == "GET":
-            queryset = calendar.assignments.select_related("employee").order_by("display_order", "employee_id")
+            queryset = self._ordered_assignments_queryset(calendar)
             serializer = CalendarEmployeeAssignmentSerializer(queryset, many=True)
             return Response(serializer.data)
 
@@ -1007,6 +1017,76 @@ class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         serializer.save(updated_by=self._actor())
         return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], url_path="requirements/replicate")
+    def replicate_requirements(self, request, pk=None):
+        calendar = self.get_object()
+        try:
+            position_id = int(request.data.get("position"))
+            required_headcount = int(request.data.get("required_headcount", 0))
+        except (TypeError, ValueError):
+            return Response({"detail": "position e required_headcount são obrigatórios."}, status=status.HTTP_400_BAD_REQUEST)
+
+        mode = str(request.data.get("mode") or "remaining").strip().lower()
+        base_date_raw = request.data.get("date")
+        notes = str(request.data.get("notes") or "")
+        weekdays_only = bool(request.data.get("weekdays_only", False))
+        if not base_date_raw:
+            return Response({"detail": "date é obrigatório."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            base_date = datetime.fromisoformat(str(base_date_raw)).date()
+        except ValueError:
+            return Response({"detail": "date inválida."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if base_date.year != calendar.year or base_date.month != calendar.month:
+            return Response({"detail": "A data base deve pertencer ao mês do calendário."}, status=status.HTTP_400_BAD_REQUEST)
+
+        _, total_days = monthrange(calendar.year, calendar.month)
+        month_start = datetime(calendar.year, calendar.month, 1).date()
+        month_end = datetime(calendar.year, calendar.month, total_days).date()
+        if mode not in {"remaining", "all"}:
+            return Response({"detail": "mode inválido. Use remaining ou all."}, status=status.HTTP_400_BAD_REQUEST)
+
+        start_date = base_date if mode == "remaining" else month_start
+        target_dates = []
+        current = start_date
+        while current <= month_end:
+            if not weekdays_only or current.weekday() < 5:
+                target_dates.append(current)
+            current += timedelta(days=1)
+
+        position = get_object_or_404(OperationalPosition, pk=position_id)
+        user = self._actor()
+        created = 0
+        updated = 0
+        with transaction.atomic():
+            for current_date in target_dates:
+                obj, was_created = PositionDailyRequirement.objects.update_or_create(
+                    calendar=calendar,
+                    position=position,
+                    date=current_date,
+                    defaults={
+                        "required_headcount": required_headcount,
+                        "notes": notes,
+                        "updated_by": user,
+                        "created_by": user,
+                    },
+                )
+                if was_created:
+                    created += 1
+                else:
+                    updated += 1
+
+        return Response(
+            {
+                "created": created,
+                "updated": updated,
+                "affected_days": len(target_dates),
+                "mode": mode,
+                "weekdays_only": weekdays_only,
+            }
+        )
 
     @action(detail=True, methods=["get"])
     def summary(self, request, pk=None):

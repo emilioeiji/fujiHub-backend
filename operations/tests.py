@@ -447,6 +447,120 @@ class OperationsCalendarAPITests(TestCase):
         self.assertEqual(assignment["employee"], self.employee.pk)
         self.assertEqual(assignment["calendar"], calendar["id"])
 
+    def test_assignments_endpoint_returns_operational_order(self):
+        calendar = self._create_calendar()
+        third_employee = Employee.objects.create(
+            employee_id="EMP-OPS-API-004",
+            name_jp="田中次郎",
+            name_en="Jiro Tanaka",
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+            building_floor=self.building_floor,
+            active_end_month=True,
+        )
+        fourth_employee = Employee.objects.create(
+            employee_id="EMP-OPS-API-005",
+            name_jp="高橋三郎",
+            name_en="Saburo Takahashi",
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+            building_floor=self.building_floor,
+            active_end_month=True,
+        )
+
+        self._create_assignment(
+            calendar["id"],
+            employee=third_employee.pk,
+            operational_category="koutei_leader",
+            rotation_group="A",
+            display_order=1,
+        )
+        self._create_assignment(
+            calendar["id"],
+            employee=self.employee.pk,
+            operational_category="normal",
+            rotation_group="B",
+            display_order=5,
+        )
+        self._create_assignment(
+            calendar["id"],
+            employee=self.second_employee.pk,
+            operational_category="normal",
+            rotation_group="A",
+            display_order=10,
+        )
+        self._create_assignment(
+            calendar["id"],
+            employee=fourth_employee.pk,
+            operational_category="relief",
+            rotation_group="C",
+            display_order=1,
+        )
+
+        response = self.client.get(f"/api/operations/calendars/{calendar['id']}/assignments/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ordered_categories = [item["operational_category"] for item in response.data]
+        ordered_employee_ids = [item["employee_detail"]["employee_id"] for item in response.data]
+
+        self.assertEqual(
+            ordered_categories,
+            ["normal", "normal", "koutei_leader", "relief"],
+        )
+        self.assertEqual(
+            ordered_employee_ids,
+            ["EMP-OPS-API-002", "EMP-OPS-API-001", "EMP-OPS-API-004", "EMP-OPS-API-005"],
+        )
+        self.assertIn("category_rank", response.data[0])
+        self.assertIn("category_label", response.data[0])
+        self.assertIn("visual_category", response.data[0])
+        self.assertIn("billing_rate", response.data[0])
+        self.assertIn("process", response.data[0])
+
+    def test_import_uses_master_operational_category_kl_mapping(self):
+        calendar = self._create_calendar()
+        self.employee.operational_category = "kl"
+        self.employee.save(update_fields=["operational_category"])
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/import-employees/",
+            {"import_all": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        assignment = CalendarEmployeeAssignment.objects.filter(calendar_id=calendar["id"], employee=self.employee).first()
+        self.assertIsNotNone(assignment)
+        self.assertEqual(
+            assignment.operational_category,
+            CalendarEmployeeAssignment.OperationalCategory.KOUTEI_LEADER,
+        )
+
+    def test_replicate_requirements_endpoint(self):
+        calendar = self._create_calendar()
+        position = self._create_position()
+
+        response = self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/requirements/replicate/",
+            {
+                "position": position["id"],
+                "date": "2026-05-10",
+                "required_headcount": 22,
+                "mode": "remaining",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(response.data["affected_days"], 22)
+        self.assertEqual(
+            PositionDailyRequirement.objects.filter(
+                calendar_id=calendar["id"],
+                position_id=position["id"],
+                required_headcount=22,
+            ).count(),
+            response.data["affected_days"],
+        )
+
     def test_create_cell(self):
         calendar = self._create_calendar()
         position = self._create_position()

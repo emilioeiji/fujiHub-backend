@@ -35,6 +35,80 @@ class ParsedCalendarCellValue:
     recognized: bool = False
 
 
+def get_group_rank(group_value):
+    token = str(group_value or "").strip().upper()
+    if token == "A":
+        return 10
+    if token == "B":
+        return 20
+    if token == "C":
+        return 30
+    return 90
+
+
+def get_visual_category_from_master(employee):
+    category = _employee_operational_category(employee)
+    if category == CalendarEmployeeAssignment.OperationalCategory.NORMAL:
+        return "normal"
+    if category == CalendarEmployeeAssignment.OperationalCategory.KOUTEI_LEADER:
+        return "koutei_leader"
+    if category in {
+        CalendarEmployeeAssignment.OperationalCategory.RELIEF,
+        CalendarEmployeeAssignment.OperationalCategory.TRAINER,
+    }:
+        return "relief"
+    if category in {
+        CalendarEmployeeAssignment.OperationalCategory.GL,
+        CalendarEmployeeAssignment.OperationalCategory.SUPERVISOR,
+        CalendarEmployeeAssignment.OperationalCategory.MANAGER,
+        CalendarEmployeeAssignment.OperationalCategory.DIRECTOR,
+    }:
+        return "trainer"
+    return "normal"
+
+
+def get_operational_rank(assignment):
+    token = str(getattr(assignment, "operational_category", "") or "").strip().lower()
+    if token == CalendarEmployeeAssignment.OperationalCategory.NORMAL:
+        return 10
+    if token == CalendarEmployeeAssignment.OperationalCategory.KOUTEI_LEADER:
+        return 20
+    if token in {
+        CalendarEmployeeAssignment.OperationalCategory.RELIEF,
+        CalendarEmployeeAssignment.OperationalCategory.TRAINER,
+    }:
+        return 30
+    if token in {
+        CalendarEmployeeAssignment.OperationalCategory.GL,
+        CalendarEmployeeAssignment.OperationalCategory.SUPERVISOR,
+        CalendarEmployeeAssignment.OperationalCategory.MANAGER,
+        CalendarEmployeeAssignment.OperationalCategory.DIRECTOR,
+    }:
+        return 40
+    return 90
+
+
+def get_assignment_sort_key(assignment):
+    employee = getattr(assignment, "employee", None)
+    process_code = str(getattr(getattr(employee, "process", None), "code", "") or "").strip().casefold()
+    employee_code = str(getattr(employee, "employee_cd", "") or getattr(employee, "employee_id", "") or "").strip().casefold()
+    name = str(
+        getattr(employee, "name_en", "")
+        or getattr(employee, "internal_name", "")
+        or getattr(employee, "name_jp", "")
+        or ""
+    ).strip().casefold()
+    return (
+        get_operational_rank(assignment),
+        get_group_rank(getattr(assignment, "rotation_group", "")),
+        process_code,
+        int(getattr(assignment, "display_order", 0) or 0),
+        employee_code,
+        name,
+        int(getattr(assignment, "id", 0) or 0),
+    )
+
+
 def generate_calendar_schedule(calendar, user, overwrite=False, default_4x2_anchor_date=None):
     anchor_date = default_4x2_anchor_date or date(2026, 5, 30)
     if isinstance(anchor_date, str):
@@ -325,10 +399,12 @@ def preview_calendar_employee_candidates(calendar, import_all=False, employee_id
             "name": employee.name_en or employee.internal_name or employee.name_jp or "",
             "shift": getattr(employee.shift, "code", None),
             "process": getattr(employee.process, "code", None),
+            "billing_rate": getattr(getattr(employee, "billing_rate", None), "code", None),
             "shift_type": _employee_shift_type(employee),
             "rotation_group": _employee_rotation_group(employee),
             "work_pattern": _employee_work_pattern(employee),
             "operational_category": _employee_operational_category(employee),
+            "visual_category": get_visual_category_from_master(employee),
         }
         default_position = _infer_default_position(calendar, employee)
         if default_position:
@@ -398,6 +474,30 @@ def _infer_shift_type(employee):
 
 
 def _infer_operational_category(employee):
+    billing_text = " ".join(
+        str(value or "")
+        for value in [
+            getattr(getattr(employee, "billing_rate", None), "code", ""),
+            getattr(getattr(employee, "billing_rate", None), "label_pt", ""),
+            getattr(getattr(employee, "billing_rate", None), "label_jp", ""),
+            getattr(employee, "rank", ""),
+        ]
+    ).casefold()
+    process_text = " ".join(
+        str(value or "")
+        for value in [
+            getattr(getattr(employee, "process", None), "code", ""),
+            getattr(getattr(employee, "process", None), "label_pt", ""),
+            getattr(getattr(employee, "process", None), "label_jp", ""),
+        ]
+    ).casefold()
+
+    if any(keyword in billing_text for keyword in {"kl", "koutei", "工程リーダ", "工程ﾘｰﾀﾞ"}):
+        return CalendarEmployeeAssignment.OperationalCategory.KOUTEI_LEADER
+    if any(keyword in billing_text for keyword in {"ririfu", "relief", "apoio"}):
+        return CalendarEmployeeAssignment.OperationalCategory.RELIEF
+    if any(keyword in process_text for keyword in {"ririfu", "relief", "apoio"}):
+        return CalendarEmployeeAssignment.OperationalCategory.RELIEF
     if employee.manager_flag or _employee_has_any_keyword(employee, {"manager"}):
         return CalendarEmployeeAssignment.OperationalCategory.MANAGER
     if _employee_has_any_keyword(employee, {"supervisor"}):
@@ -432,11 +532,24 @@ def _employee_shift_type(employee):
 
 
 def _employee_operational_category(employee):
-    candidate = (getattr(employee, "operational_category", "") or "").strip()
+    candidate = _normalize_operational_category_token(getattr(employee, "operational_category", ""))
     allowed = {choice for choice, _ in CalendarEmployeeAssignment.OperationalCategory.choices}
     if candidate in allowed:
         return candidate
     return _infer_operational_category(employee)
+
+
+def _normalize_operational_category_token(value):
+    token = str(value or "").strip().lower()
+    if token == "kl":
+        return CalendarEmployeeAssignment.OperationalCategory.KOUTEI_LEADER
+    if token in {"koutei_leader", "kouteileader"}:
+        return CalendarEmployeeAssignment.OperationalCategory.KOUTEI_LEADER
+    if token in {"ririfu", "apoio"}:
+        return CalendarEmployeeAssignment.OperationalCategory.RELIEF
+    if token in {"leader", "lider", "lideranca", "supervisao"}:
+        return CalendarEmployeeAssignment.OperationalCategory.SUPERVISOR
+    return token
 
 
 def _employee_rotation_group(employee):
