@@ -12,6 +12,8 @@ from .views import (
     ProductionMonitorSourceViewSet,
     ProductionSnapshotViewSet,
     OperationsSettingsViewSet,
+    OperationsMePermissionViewSet,
+    OperationsAccessManagementViewSet,
     EmployeeAdministrativeNoteViewSet,
     AttendanceDashboardViewSet,
     MonthlyOperationCalendarViewSet,
@@ -43,7 +45,9 @@ router.register("production-metrics", ProductionMetricsViewSet, basename="operat
 router.register("attendance-dashboard", AttendanceDashboardViewSet, basename="operations-attendance-dashboard")
 router.register("settings", OperationsSettingsViewSet, basename="operations-settings")
 router.register("employee-admin-notes", EmployeeAdministrativeNoteViewSet, basename="operations-employee-admin-notes")
+router.register("access-rbac", OperationsAccessManagementViewSet, basename="operations-access-rbac")
 
 urlpatterns = [
+    path("me/permissions/", OperationsMePermissionViewSet.as_view({"get": "list"}), name="operations-me-permissions"),
     path("", include(router.urls)),
 ]

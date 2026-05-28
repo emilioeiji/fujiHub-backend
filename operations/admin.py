@@ -15,6 +15,10 @@ from .models import (
     HikitsuguiItem,
     RotationGroupStyle,
     WorkTimeCode,
+    OperationRole,
+    UserOperationProfile,
+    UserOperationScope,
+    OperationAccessAuditLog,
 )
 
 
@@ -203,3 +207,38 @@ class HikitsuguiItemAdmin(admin.ModelAdmin):
     list_display = ("report", "title", "category", "status", "priority", "responsible_employee", "is_active")
     list_filter = ("status", "priority", "category", "is_active")
     search_fields = ("title", "description", "action_taken", "pending_for_next_shift")
+
+
+@admin.register(OperationRole)
+class OperationRoleAdmin(admin.ModelAdmin):
+    list_display = ("code", "name", "is_readonly", "is_dashboard_only", "is_global_scope", "display_order", "is_active")
+    list_filter = ("is_readonly", "is_dashboard_only", "is_global_scope", "is_active")
+    search_fields = ("code", "name", "description")
+
+
+class UserOperationScopeInline(admin.TabularInline):
+    model = UserOperationScope
+    extra = 0
+
+
+@admin.register(UserOperationProfile)
+class UserOperationProfileAdmin(admin.ModelAdmin):
+    list_display = ("user", "role", "is_active")
+    list_filter = ("role", "is_active")
+    search_fields = ("user__username", "user__email", "notes")
+    inlines = [UserOperationScopeInline]
+    filter_horizontal = ("additional_roles",)
+
+
+@admin.register(UserOperationScope)
+class UserOperationScopeAdmin(admin.ModelAdmin):
+    list_display = ("profile", "role", "department", "process", "shift", "line", "area", "is_active")
+    list_filter = ("role", "department", "process", "shift", "is_active")
+    search_fields = ("profile__user__username", "line", "area", "notes")
+
+
+@admin.register(OperationAccessAuditLog)
+class OperationAccessAuditLogAdmin(admin.ModelAdmin):
+    list_display = ("target_user", "action", "created_by", "created_at")
+    list_filter = ("action", "created_at")
+    search_fields = ("target_user__username", "created_by__username")

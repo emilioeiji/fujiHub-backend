@@ -34,12 +34,24 @@ from .models import (
     ProductionMonitorSource,
     ProductionSnapshot,
     OperationsSettings,
+    OperationRole,
+    UserOperationProfile,
+    UserOperationScope,
+    OperationAccessAuditLog,
     EmployeeAdministrativeNote,
     RotationGroupStyle,
     WorkTimeCode,
     HikitsuguiOccurrenceCategory,
 )
 from .services import parse_production_file
+from .rbac import (
+    get_user_operation_profile,
+    user_can_access_scope,
+    user_can_edit_operations_settings,
+    user_can_edit_schedule,
+    user_can_view_admin_notes,
+    user_has_role,
+)
 
 
 class OperationsCalendarModelTests(TestCase):
@@ -2112,17 +2124,14 @@ class OperationsCalendarAPITests(TestCase):
         calendar = self._create_calendar(year=2026, month=5, title="Employee detail test")
         assignment = self._create_assignment(calendar["id"])
         work_status = AttendanceStatus.objects.get(code="work")
-        self.client.post(
-            f"/api/operations/calendars/{calendar['id']}/cells/",
-            {
-                "assignment": assignment["id"],
-                "date": "2026-05-10",
-                "attendance_status": work_status.id,
-                "overtime_minutes": 90,
-                "actual_work_minutes": 540,
-                "memo": "Observacao teste",
-            },
-            format="json",
+        CalendarDayCell.objects.create(
+            calendar_id=calendar["id"],
+            assignment_id=assignment["id"],
+            date="2026-05-10",
+            attendance_status=work_status,
+            overtime_minutes=90,
+            actual_work_minutes=540,
+            memo="Observacao teste",
         )
         response = self.client.get(f"/api/operations/attendance-dashboard/employees/{self.employee.employee_id}/?month=2026-05")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -2133,16 +2142,13 @@ class OperationsCalendarAPITests(TestCase):
         calendar = self._create_calendar(year=2026, month=5, title="Notes detail test")
         assignment = self._create_assignment(calendar["id"])
         work_status = AttendanceStatus.objects.get(code="work")
-        self.client.post(
-            f"/api/operations/calendars/{calendar['id']}/cells/",
-            {
-                "assignment": assignment["id"],
-                "date": "2026-05-28",
-                "attendance_status": work_status.id,
-                "overtime_minutes": 30,
-                "actual_work_minutes": 480,
-            },
-            format="json",
+        CalendarDayCell.objects.create(
+            calendar_id=calendar["id"],
+            assignment_id=assignment["id"],
+            date="2026-05-28",
+            attendance_status=work_status,
+            overtime_minutes=30,
+            actual_work_minutes=480,
         )
 
         response = self.client.post(
@@ -2240,3 +2246,359 @@ class OperationsCalendarAPITests(TestCase):
         self.assertTrue(hasattr(snapshot, "metrics"))
         self.assertEqual(snapshot.metrics.error_count, 1)
         self.assertEqual(snapshot.metrics.running_count, 1)
+
+
+class OperationsRBACBaseTests(TestCase):
+    def setUp(self):
+        self.User = get_user_model()
+        self.department = Department.objects.create(code="D-RBAC", label_pt="Dept RBAC", label_jp="RBAC")
+        self.process = Process.objects.create(code="P-RBAC", label_pt="Proc RBAC", label_jp="工程 RBAC")
+        self.shift = Shift.objects.create(code="RBAC-D", label_pt="Dia", label_jp="日勤")
+        self.other_department = Department.objects.create(code="D-RBAC-2", label_pt="Dept 2", label_jp="RBAC2")
+        self.other_process = Process.objects.create(code="P-RBAC-2", label_pt="Proc 2", label_jp="工程2")
+        self.other_shift = Shift.objects.create(code="RBAC-N", label_pt="Noite", label_jp="夜勤")
+        self.calendar = MonthlyOperationCalendar.objects.create(
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+            year=2026,
+            month=6,
+            title="RBAC Calendar",
+        )
+        self.other_calendar = MonthlyOperationCalendar.objects.create(
+            department=self.other_department,
+            process=self.other_process,
+            shift=self.other_shift,
+            year=2026,
+            month=6,
+            title="RBAC Calendar 2",
+        )
+        self.roles = {r.code: r for r in OperationRole.objects.filter(code__in={
+            "director", "viewer", "kl", "hr", "dashboard_tv"
+        })}
+
+    def _make_user(self, username):
+        return self.User.objects.create_user(username=username, password="test12345")
+
+    def _attach_profile(self, user, role_code):
+        return UserOperationProfile.objects.create(user=user, role=self.roles[role_code])
+
+    def test_director_has_global_scope_and_can_edit_schedule(self):
+        user = self._make_user("rbac_director")
+        self._attach_profile(user, "director")
+
+        self.assertTrue(user_has_role(user, "director"))
+        self.assertTrue(user_can_access_scope(user, department=self.department.id, process=self.process.id, shift=self.shift.id))
+        self.assertTrue(user_can_access_scope(user, department=self.other_department.id, process=self.other_process.id, shift=self.other_shift.id))
+        self.assertTrue(user_can_edit_schedule(user, self.calendar))
+        self.assertTrue(user_can_edit_operations_settings(user))
+
+    def test_viewer_is_readonly_and_cannot_edit(self):
+        user = self._make_user("rbac_viewer")
+        self._attach_profile(user, "viewer")
+        UserOperationScope.objects.create(
+            profile=user.operation_profile,
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+        )
+
+        self.assertTrue(user_can_access_scope(user, department=self.department.id, process=self.process.id, shift=self.shift.id))
+        self.assertFalse(user_can_edit_schedule(user, self.calendar))
+        self.assertFalse(user_can_edit_operations_settings(user))
+
+    def test_kl_can_access_only_associated_scope(self):
+        user = self._make_user("rbac_kl")
+        profile = self._attach_profile(user, "kl")
+        UserOperationScope.objects.create(
+            profile=profile,
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+            line="Line A",
+            area="Area 1",
+        )
+
+        self.assertIsNotNone(get_user_operation_profile(user))
+        self.assertTrue(user_can_access_scope(user, department=self.department.id, process=self.process.id, shift=self.shift.id))
+        self.assertFalse(user_can_access_scope(user, department=self.other_department.id, process=self.other_process.id, shift=self.other_shift.id))
+        self.assertFalse(user_can_edit_schedule(user, self.calendar))
+        self.assertFalse(user_can_edit_schedule(user, self.other_calendar))
+
+    def test_hr_can_view_admin_notes(self):
+        user = self._make_user("rbac_hr")
+        self._attach_profile(user, "hr")
+
+        self.assertTrue(user_can_view_admin_notes(user))
+        self.assertFalse(user_can_edit_schedule(user, self.calendar))
+
+    def test_dashboard_tv_cannot_edit_schedule(self):
+        user = self._make_user("rbac_tv")
+        profile = self._attach_profile(user, "dashboard_tv")
+        UserOperationScope.objects.create(profile=profile, department=self.department)
+
+        self.assertTrue(user_can_access_scope(user, department=self.department.id))
+        self.assertFalse(user_can_edit_schedule(user, self.calendar))
+
+
+class OperationsRBACPermissionAPITests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.User = get_user_model()
+        self.department = Department.objects.create(code="D-PERM", label_pt="Dept Perm", label_jp="部署 Perm")
+        self.process = Process.objects.create(code="P-PERM", label_pt="Proc Perm", label_jp="工程 Perm")
+        self.shift = Shift.objects.create(code="S-PERM", label_pt="Dia", label_jp="日勤")
+        self.calendar = MonthlyOperationCalendar.objects.create(
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+            year=2026,
+            month=5,
+            title="Perm Calendar",
+        )
+
+        self.department2 = Department.objects.create(code="D-PERM2", label_pt="Dept 2", label_jp="部署2")
+        self.process2 = Process.objects.create(code="P-PERM2", label_pt="Proc 2", label_jp="工程2")
+        self.shift2 = Shift.objects.create(code="S-PERM2", label_pt="Noite", label_jp="夜勤")
+        self.calendar2 = MonthlyOperationCalendar.objects.create(
+            department=self.department2,
+            process=self.process2,
+            shift=self.shift2,
+            year=2026,
+            month=5,
+            title="Perm Calendar 2",
+        )
+
+        self.employee = Employee.objects.create(
+            employee_id="EMP-PERM-001",
+            name_jp="検証 太郎",
+            name_en="Perm Taro",
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+        )
+        self.assignment = CalendarEmployeeAssignment.objects.create(
+            calendar=self.calendar,
+            employee=self.employee,
+            operational_category=CalendarEmployeeAssignment.OperationalCategory.NORMAL,
+            work_pattern=CalendarEmployeeAssignment.WorkPattern.FOUR_TWO,
+            rotation_group=CalendarEmployeeAssignment.RotationGroup.A,
+            shift_type=CalendarEmployeeAssignment.ShiftType.DAY,
+            start_date=date(2026, 5, 1),
+            display_order=1,
+        )
+        self.cell = CalendarDayCell.objects.create(
+            calendar=self.calendar,
+            assignment=self.assignment,
+            date=date(2026, 5, 1),
+            raw_value="ECII",
+        )
+        self.note = EmployeeAdministrativeNote.objects.create(
+            employee=self.employee,
+            date=date(2026, 5, 1),
+            category=EmployeeAdministrativeNote.Category.OUTROS,
+            severity=EmployeeAdministrativeNote.Severity.INFO,
+            note="Nota teste",
+        )
+
+    def _make_user_with_scope(self, username, role_code, department=None, process=None, shift=None):
+        user = self.User.objects.create_user(username=username, password="test12345")
+        role = OperationRole.objects.get(code=role_code)
+        profile = UserOperationProfile.objects.create(user=user, role=role)
+        if department is not None or process is not None or shift is not None:
+            UserOperationScope.objects.create(
+                profile=profile,
+                department=department,
+                process=process,
+                shift=shift,
+            )
+        return user
+
+    def test_viewer_cannot_edit_schedule_cells(self):
+        user = self._make_user_with_scope(
+            "perm_viewer",
+            "viewer",
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+        )
+        self.client.force_authenticate(user=user)
+        response = self.client.patch(
+            f"/api/operations/calendars/{self.calendar.id}/cells/{self.cell.id}/",
+            {"raw_value": "NOVO"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_kl_can_create_hikitsugui_in_scope(self):
+        user = self._make_user_with_scope(
+            "perm_kl",
+            "kl",
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+        )
+        self.client.force_authenticate(user=user)
+        response = self.client.post(
+            "/api/operations/hikitsugui-reports/",
+            {
+                "calendar": self.calendar.id,
+                "report_date": "2026-05-02",
+                "shift": self.shift.id,
+                "process": self.process.id,
+                "area_equipment": "Linha A",
+                "status": "open",
+                "priority": "normal",
+                "description": "Ocorrência teste",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_kl_cannot_access_employee_admin_notes(self):
+        user = self._make_user_with_scope(
+            "perm_kl_note",
+            "kl",
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+        )
+        self.client.force_authenticate(user=user)
+        response = self.client.get("/api/operations/employee-admin-notes/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_hr_can_access_employee_admin_notes(self):
+        user = self._make_user_with_scope("perm_hr", "hr")
+        self.client.force_authenticate(user=user)
+        response = self.client.get("/api/operations/employee-admin-notes/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_dashboard_tv_denied_on_employee_detail(self):
+        user = self._make_user_with_scope(
+            "perm_tv",
+            "dashboard_tv",
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+        )
+        self.client.force_authenticate(user=user)
+        response = self.client.get(
+            f"/api/operations/attendance-dashboard/employees/{self.employee.employee_id}/?month=2026-05"
+        )
+        self.assertIn(response.status_code, {status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND})
+
+    def test_manager_access_in_scope_and_block_out_of_scope(self):
+        user = self._make_user_with_scope(
+            "perm_manager",
+            "manager",
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+        )
+        self.client.force_authenticate(user=user)
+        response_ok = self.client.get(f"/api/operations/calendars/{self.calendar.id}/")
+        self.assertEqual(response_ok.status_code, status.HTTP_200_OK)
+
+        response_blocked = self.client.get(f"/api/operations/calendars/{self.calendar2.id}/")
+        self.assertIn(response_blocked.status_code, {status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND})
+
+    def test_superuser_has_full_access(self):
+        user = self.User.objects.create_superuser("perm_super", "super@example.com", "test12345")
+        self.client.force_authenticate(user=user)
+        response = self.client.patch(
+            "/api/operations/settings/current/",
+            {"weekly_warning_hours": "40.00"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_me_permissions_endpoint_returns_flags_and_scope(self):
+        user = self._make_user_with_scope(
+            "perm_gl_me",
+            "gl",
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+        )
+        self.client.force_authenticate(user=user)
+        response = self.client.get("/api/operations/me/permissions/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["role"], "gl")
+        self.assertTrue(response.data["flags"]["can_view_schedule"])
+        self.assertTrue(response.data["flags"]["can_edit_schedule"])
+        self.assertGreaterEqual(len(response.data["scopes"]), 1)
+
+
+class OperationsRBACManagementAPITests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.User = get_user_model()
+        self.department = Department.objects.create(code="D-RBAC-M", label_pt="Dept", label_jp="部署")
+        self.process = Process.objects.create(code="P-RBAC-M", label_pt="Proc", label_jp="工程")
+        self.shift = Shift.objects.create(code="S-RBAC-M", label_pt="Dia", label_jp="日勤")
+        self.target_user = self.User.objects.create_user(username="rbac_target", password="test12345", first_name="Target")
+        self.manager_user = self.User.objects.create_user(username="rbac_manager", password="test12345")
+        self.hr_user = self.User.objects.create_user(username="rbac_hr_mgr", password="test12345")
+        self.viewer_user = self.User.objects.create_user(username="rbac_viewer_mgr", password="test12345")
+
+        self.role_manager = OperationRole.objects.get(code="manager")
+        self.role_hr = OperationRole.objects.get(code="hr")
+        self.role_viewer = OperationRole.objects.get(code="viewer")
+        self.role_kl = OperationRole.objects.get(code="kl")
+
+        UserOperationProfile.objects.create(user=self.manager_user, role=self.role_manager)
+        UserOperationProfile.objects.create(user=self.hr_user, role=self.role_hr)
+        UserOperationProfile.objects.create(user=self.viewer_user, role=self.role_viewer)
+
+    def test_viewer_cannot_open_rbac_management(self):
+        self.client.force_authenticate(user=self.viewer_user)
+        response = self.client.get("/api/operations/access-rbac/users/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_manager_can_read_rbac_users_but_not_patch(self):
+        self.client.force_authenticate(user=self.manager_user)
+        response = self.client.get("/api/operations/access-rbac/users/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        patch_response = self.client.patch(
+            f"/api/operations/access-rbac/users/{self.target_user.id}/profile/",
+            {"notes": "blocked"},
+            format="json",
+        )
+        self.assertEqual(patch_response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_hr_can_update_profile_and_scopes_with_audit(self):
+        self.client.force_authenticate(user=self.hr_user)
+        profile_response = self.client.patch(
+            f"/api/operations/access-rbac/users/{self.target_user.id}/profile/",
+            {
+                "role": self.role_kl.id,
+                "additional_roles": [self.role_viewer.id],
+                "notes": "KL manual no setor A",
+                "is_active": True,
+            },
+            format="json",
+        )
+        self.assertEqual(profile_response.status_code, status.HTTP_200_OK)
+
+        scopes_response = self.client.put(
+            f"/api/operations/access-rbac/users/{self.target_user.id}/scopes/",
+            [
+                {
+                    "department": self.department.id,
+                    "process": self.process.id,
+                    "shift": self.shift.id,
+                    "line": "L1",
+                    "area": "A1",
+                    "is_active": True,
+                }
+            ],
+            format="json",
+        )
+        self.assertEqual(scopes_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(scopes_response.data["scopes"]), 1)
+
+        profile = UserOperationProfile.objects.get(user=self.target_user)
+        self.assertEqual(profile.role.code, "kl")
+        self.assertEqual(profile.scopes.filter(is_active=True).count(), 1)
+        self.assertEqual(OperationAccessAuditLog.objects.filter(target_user=self.target_user).count(), 2)

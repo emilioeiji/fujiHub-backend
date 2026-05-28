@@ -1,6 +1,7 @@
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.conf import settings
 
 from common.models import BaseModel
 
@@ -942,3 +943,118 @@ class EmployeeAdministrativeNote(BaseModel):
 
     def __str__(self):
         return f"{self.employee_id} - {self.category} - {self.date}"
+
+
+class OperationRole(BaseModel):
+    code = models.SlugField(max_length=50, unique=True)
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True)
+    is_readonly = models.BooleanField(default=False)
+    is_dashboard_only = models.BooleanField(default=False)
+    is_global_scope = models.BooleanField(default=False)
+    display_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["display_order", "code"]
+        verbose_name = "Operation role"
+        verbose_name_plural = "Operation roles"
+
+    def __str__(self):
+        return self.name or self.code
+
+
+class UserOperationProfile(BaseModel):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="operation_profile",
+    )
+    role = models.ForeignKey(
+        OperationRole,
+        on_delete=models.PROTECT,
+        related_name="user_profiles",
+    )
+    additional_roles = models.ManyToManyField(
+        OperationRole,
+        blank=True,
+        related_name="user_profiles_additional",
+    )
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        verbose_name = "User operation profile"
+        verbose_name_plural = "User operation profiles"
+
+    def __str__(self):
+        return f"{self.user.username} - {self.role.code}"
+
+
+class UserOperationScope(BaseModel):
+    profile = models.ForeignKey(
+        UserOperationProfile,
+        on_delete=models.CASCADE,
+        related_name="scopes",
+    )
+    role = models.ForeignKey(
+        OperationRole,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="scopes",
+        help_text="Optional override role for this specific scope.",
+    )
+    department = models.ForeignKey(
+        "master.Department",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="user_operation_scopes",
+    )
+    process = models.ForeignKey(
+        "master.Process",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="user_operation_scopes",
+    )
+    shift = models.ForeignKey(
+        "master.Shift",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="user_operation_scopes",
+    )
+    area = models.CharField(max_length=120, blank=True)
+    line = models.CharField(max_length=120, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["profile_id", "department_id", "process_id", "shift_id", "line", "area", "id"]
+        verbose_name = "User operation scope"
+        verbose_name_plural = "User operation scopes"
+
+    def __str__(self):
+        return f"{self.profile.user.username} / {self.department_id or '-'} / {self.process_id or '-'}"
+
+
+class OperationAccessAuditLog(BaseModel):
+    class Action(models.TextChoices):
+        PROFILE_UPDATED = "profile_updated", "Profile updated"
+        SCOPES_REPLACED = "scopes_replaced", "Scopes replaced"
+
+    target_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="operation_access_audits",
+    )
+    action = models.CharField(max_length=40, choices=Action.choices)
+    payload_before = models.JSONField(default=dict, blank=True)
+    payload_after = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        verbose_name = "Operation access audit log"
+        verbose_name_plural = "Operation access audit logs"
+
+    def __str__(self):
+        return f"{self.target_user_id} - {self.action} - {self.created_at}"

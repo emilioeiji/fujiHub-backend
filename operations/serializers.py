@@ -27,6 +27,10 @@ from .models import (
     OperationsSettings,
     EmployeeAdministrativeNote,
     WorkTimeCode,
+    OperationRole,
+    UserOperationProfile,
+    UserOperationScope,
+    OperationAccessAuditLog,
 )
 from .services import get_operational_rank, get_visual_category_from_master
 
@@ -740,3 +744,124 @@ class EmployeeAdministrativeNoteSerializer(serializers.ModelSerializer):
 
     def get_created_by_username(self, obj):
         return getattr(obj.created_by, "username", None)
+
+
+class OperationRoleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OperationRole
+        fields = [
+            "id",
+            "code",
+            "name",
+            "description",
+            "is_readonly",
+            "is_dashboard_only",
+            "is_global_scope",
+            "display_order",
+            "is_active",
+        ]
+
+
+class UserOperationScopeSerializer(serializers.ModelSerializer):
+    role_code = serializers.SerializerMethodField()
+    department_code = serializers.SerializerMethodField()
+    process_code = serializers.SerializerMethodField()
+    shift_code = serializers.SerializerMethodField()
+
+    class Meta:
+        model = UserOperationScope
+        fields = [
+            "id",
+            "role",
+            "role_code",
+            "department",
+            "department_code",
+            "process",
+            "process_code",
+            "shift",
+            "shift_code",
+            "line",
+            "area",
+            "notes",
+            "is_active",
+        ]
+
+    def get_role_code(self, obj):
+        return getattr(obj.role, "code", None)
+
+    def get_department_code(self, obj):
+        return getattr(obj.department, "code", None)
+
+    def get_process_code(self, obj):
+        return getattr(obj.process, "code", None)
+
+    def get_shift_code(self, obj):
+        return getattr(obj.shift, "code", None)
+
+
+class UserOperationProfileSerializer(serializers.ModelSerializer):
+    role_code = serializers.SerializerMethodField()
+    additional_roles = serializers.PrimaryKeyRelatedField(
+        queryset=OperationRole.objects.filter(is_active=True),
+        many=True,
+        required=False,
+    )
+    additional_role_codes = serializers.SerializerMethodField()
+    scopes = UserOperationScopeSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = UserOperationProfile
+        fields = [
+            "id",
+            "role",
+            "role_code",
+            "additional_roles",
+            "additional_role_codes",
+            "notes",
+            "is_active",
+            "updated_at",
+            "scopes",
+        ]
+
+    def get_role_code(self, obj):
+        return getattr(obj.role, "code", None)
+
+    def get_additional_role_codes(self, obj):
+        return list(obj.additional_roles.values_list("code", flat=True))
+
+
+class OperationAccessUserListSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    username = serializers.CharField()
+    full_name = serializers.CharField()
+    is_active = serializers.BooleanField()
+    operation_profile_id = serializers.IntegerField(allow_null=True)
+    role = serializers.CharField(allow_null=True)
+    additional_roles = serializers.ListField(child=serializers.CharField(), default=list)
+    scopes = UserOperationScopeSerializer(many=True)
+    updated_at = serializers.DateTimeField(allow_null=True)
+
+
+class OperationAccessAuditLogSerializer(serializers.ModelSerializer):
+    actor_username = serializers.SerializerMethodField()
+    target_username = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OperationAccessAuditLog
+        fields = [
+            "id",
+            "action",
+            "payload_before",
+            "payload_after",
+            "created_at",
+            "actor_username",
+            "target_user",
+            "target_username",
+        ]
+        read_only_fields = fields
+
+    def get_actor_username(self, obj):
+        return getattr(obj.created_by, "username", None)
+
+    def get_target_username(self, obj):
+        return getattr(obj.target_user, "username", None)

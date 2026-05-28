@@ -3,6 +3,7 @@ from calendar import monthrange
 from datetime import datetime, timedelta
 from io import StringIO
 
+from django.contrib.auth import get_user_model
 from django.http import HttpResponse
 from django.db import transaction
 from django.db.models import Count, Q, Sum
@@ -13,6 +14,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import (
@@ -39,8 +41,22 @@ from .models import (
     EmployeeAdministrativeNote,
     RotationGroupStyle,
     WorkTimeCode,
+    OperationRole,
+    UserOperationProfile,
+    UserOperationScope,
+    OperationAccessAuditLog,
 )
-from .permissions import OperationsCalendarPermission, OperationsMasterDataPermission
+from .permissions import (
+    AttendanceDashboardPermission,
+    EmployeeAdminNotePermission,
+    HikitsuguiPermission,
+    OperationsCalendarPermission,
+    OperationsMasterDataPermission,
+    OperationsSettingsPermission,
+    OperationsRBACManagementPermission,
+    ScheduleWritePermission,
+)
+from .rbac import get_user_operation_permissions_payload, get_user_operation_profile, get_user_operation_role_code
 from .serializers import (
     AttendanceStatusSerializer,
     CalendarDayCellSerializer,
@@ -63,6 +79,11 @@ from .serializers import (
     EmployeeAdministrativeNoteSerializer,
     RotationGroupStyleSerializer,
     WorkTimeCodeSerializer,
+    OperationRoleSerializer,
+    UserOperationProfileSerializer,
+    UserOperationScopeSerializer,
+    OperationAccessAuditLogSerializer,
+    OperationAccessUserListSerializer,
 )
 from .services import (
     build_calendar_cell_parser_context,
@@ -75,6 +96,7 @@ from .services import (
     recalculate_calendar_totals,
     sync_calendar_assignments_from_master,
 )
+from master.models import Department, Process, Shift
 
 
 class ActorMixin:
@@ -87,6 +109,41 @@ class ActorMixin:
 
     def perform_update(self, serializer):
         serializer.save(updated_by=self._actor())
+
+
+def _apply_operational_scope_filter(queryset, user, *, department_field, process_field=None, shift_field=None):
+    if not user or not user.is_authenticated:
+        return queryset.none()
+    if user.is_superuser:
+        return queryset
+
+    role_code = get_user_operation_role_code(user)
+    if role_code in {"director", "vice_director", "hr"}:
+        return queryset
+
+    profile = get_user_operation_profile(user)
+    if not profile:
+        # Transitional compatibility: legacy accounts-role users keep current visibility.
+        return queryset
+
+    scopes = profile.scopes.filter(is_active=True)
+    if not scopes.exists():
+        return queryset.none()
+
+    scope_filter = Q()
+    for scope in scopes:
+        clause = Q()
+        if scope.department_id is not None:
+            clause &= Q(**{department_field: scope.department_id})
+        if process_field and scope.process_id is not None:
+            clause &= Q(**{process_field: scope.process_id})
+        if shift_field and scope.shift_id is not None:
+            clause &= Q(**{shift_field: scope.shift_id})
+        scope_filter |= clause
+
+    if not scope_filter:
+        return queryset.none()
+    return queryset.filter(scope_filter)
 
 
 class OperationalPositionViewSet(ActorMixin, viewsets.ModelViewSet):
@@ -154,7 +211,7 @@ class OperationCalendarTemplateViewSet(ActorMixin, viewsets.ModelViewSet):
 class HikitsuguiOccurrenceCategoryViewSet(ActorMixin, viewsets.ModelViewSet):
     queryset = HikitsuguiOccurrenceCategory.objects.all()
     serializer_class = HikitsuguiOccurrenceCategorySerializer
-    permission_classes = [OperationsCalendarPermission]
+    permission_classes = [HikitsuguiPermission]
 
 
 class HikitsuguiReportViewSet(ActorMixin, viewsets.ModelViewSet):
@@ -166,7 +223,7 @@ class HikitsuguiReportViewSet(ActorMixin, viewsets.ModelViewSet):
         "responsible_assignment",
     ).prefetch_related("items", "items__category")
     serializer_class = HikitsuguiReportSerializer
-    permission_classes = [OperationsCalendarPermission]
+    permission_classes = [HikitsuguiPermission]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -195,13 +252,20 @@ class HikitsuguiReportViewSet(ActorMixin, viewsets.ModelViewSet):
             queryset = queryset.filter(report_date__lte=date_to)
         if responsible_employee:
             queryset = queryset.filter(responsible_employee_id=responsible_employee)
+        queryset = _apply_operational_scope_filter(
+            queryset,
+            self.request.user,
+            department_field="calendar__department_id",
+            process_field="process_id",
+            shift_field="shift_id",
+        )
         return queryset
 
 
 class HikitsuguiItemViewSet(ActorMixin, viewsets.ModelViewSet):
     queryset = HikitsuguiItem.objects.select_related("report", "category", "responsible_employee")
     serializer_class = HikitsuguiItemSerializer
-    permission_classes = [OperationsCalendarPermission]
+    permission_classes = [HikitsuguiPermission]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -215,6 +279,13 @@ class HikitsuguiItemViewSet(ActorMixin, viewsets.ModelViewSet):
             queryset = queryset.filter(status=status_param)
         if priority:
             queryset = queryset.filter(priority=priority)
+        queryset = _apply_operational_scope_filter(
+            queryset,
+            self.request.user,
+            department_field="report__calendar__department_id",
+            process_field="report__process_id",
+            shift_field="report__shift_id",
+        )
         return queryset
 
 
@@ -379,7 +450,7 @@ class ProductionMetricsViewSet(ActorMixin, viewsets.ReadOnlyModelViewSet):
 class OperationsSettingsViewSet(ActorMixin, viewsets.ModelViewSet):
     queryset = OperationsSettings.objects.all()
     serializer_class = OperationsSettingsSerializer
-    permission_classes = [OperationsMasterDataPermission]
+    permission_classes = [OperationsSettingsPermission]
 
     def _safe_load_settings(self):
         try:
@@ -418,7 +489,7 @@ class OperationsSettingsViewSet(ActorMixin, viewsets.ModelViewSet):
 class EmployeeAdministrativeNoteViewSet(ActorMixin, viewsets.ModelViewSet):
     queryset = EmployeeAdministrativeNote.objects.select_related("employee", "created_by", "updated_by")
     serializer_class = EmployeeAdministrativeNoteSerializer
-    permission_classes = [OperationsCalendarPermission]
+    permission_classes = [EmployeeAdminNotePermission]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -429,7 +500,7 @@ class EmployeeAdministrativeNoteViewSet(ActorMixin, viewsets.ModelViewSet):
 
 
 class AttendanceDashboardViewSet(viewsets.ViewSet):
-    permission_classes = [OperationsCalendarPermission]
+    permission_classes = [AttendanceDashboardPermission]
 
     def _safe_load_settings(self):
         try:
@@ -446,7 +517,7 @@ class AttendanceDashboardViewSet(viewsets.ViewSet):
                 notes="",
             )
 
-    def _filtered_cells_queryset(self, request):
+    def _filtered_cells_queryset(self, request, *, apply_scope=True):
         params = request.query_params
         month = params.get("month")
         date_from = params.get("date_from")
@@ -487,6 +558,14 @@ class AttendanceDashboardViewSet(viewsets.ViewSet):
             queryset = queryset.filter(calendar__shift_id=shift)
         if rotation_group:
             queryset = queryset.filter(assignment__rotation_group=rotation_group)
+        if apply_scope:
+            queryset = _apply_operational_scope_filter(
+                queryset,
+                request.user,
+                department_field="calendar__department_id",
+                process_field="calendar__process_id",
+                shift_field="calendar__shift_id",
+            )
         return queryset
 
     def list(self, request):
@@ -672,8 +751,12 @@ class AttendanceDashboardViewSet(viewsets.ViewSet):
             }
         )
 
+
+class AttendanceDashboardViewSet(AttendanceDashboardViewSet):
     @action(detail=False, methods=["get"], url_path=r"employees/(?P<employee_id>[^/.]+)")
     def employee_detail(self, request, employee_id=None):
+        if get_user_operation_role_code(request.user) == "dashboard_tv" and not request.user.is_superuser:
+            return Response({"detail": "Você não tem permissão para executar esta ação."}, status=status.HTTP_403_FORBIDDEN)
         settings_obj = self._safe_load_settings()
         try:
             queryset = self._filtered_cells_queryset(request)
@@ -681,6 +764,25 @@ class AttendanceDashboardViewSet(viewsets.ViewSet):
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         queryset = queryset.filter(assignment__employee__employee_id=employee_id)
         first_cell = queryset.first()
+        if not first_cell and not get_user_operation_profile(request.user):
+            try:
+                queryset = self._filtered_cells_queryset(request, apply_scope=False).filter(
+                    assignment__employee__employee_id=employee_id
+                )
+                first_cell = queryset.first()
+            except ValueError:
+                pass
+        if not first_cell:
+            queryset = CalendarDayCell.objects.select_related(
+                "calendar",
+                "assignment",
+                "assignment__employee",
+                "attendance_status",
+                "work_time_code",
+                "operational_code",
+                "position",
+            ).filter(assignment__employee__employee_id=employee_id)
+            first_cell = queryset.first()
         if not first_cell:
             return Response({"detail": "Funcionário sem registros no filtro informado."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -767,10 +869,188 @@ class AttendanceDashboardViewSet(viewsets.ViewSet):
         )
 
 
+class OperationsMePermissionViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request):
+        return Response(get_user_operation_permissions_payload(request.user))
+
+
+class OperationsAccessManagementViewSet(ActorMixin, viewsets.ViewSet):
+    permission_classes = [OperationsRBACManagementPermission]
+    UserModel = get_user_model()
+
+    def _serialize_scope(self, scope):
+        return UserOperationScopeSerializer(scope).data
+
+    def _build_user_row(self, user):
+        profile = getattr(user, "operation_profile", None)
+        scopes = []
+        role_code = None
+        additional_roles = []
+        updated_at = None
+        profile_id = None
+        if profile and profile.is_active:
+            profile_id = profile.id
+            role_code = getattr(profile.role, "code", None)
+            additional_roles = list(profile.additional_roles.filter(is_active=True).values_list("code", flat=True))
+            scopes = [self._serialize_scope(s) for s in profile.scopes.filter(is_active=True).select_related("role", "department", "process", "shift")]
+            updated_at = profile.updated_at
+
+        full_name = (user.get_full_name() or "").strip()
+        return {
+            "user_id": user.id,
+            "username": user.username,
+            "full_name": full_name or user.username,
+            "is_active": user.is_active,
+            "operation_profile_id": profile_id,
+            "role": role_code,
+            "additional_roles": additional_roles,
+            "scopes": scopes,
+            "updated_at": updated_at,
+        }
+
+    def _get_or_create_profile(self, user):
+        profile = getattr(user, "operation_profile", None)
+        if profile:
+            return profile
+
+        fallback_role = OperationRole.objects.filter(code="viewer", is_active=True).first() or OperationRole.objects.filter(is_active=True).first()
+        if not fallback_role:
+            raise ValueError("Nenhum OperationRole ativo encontrado.")
+        return UserOperationProfile.objects.create(user=user, role=fallback_role, created_by=self._actor(), updated_by=self._actor())
+
+    def _audit(self, *, target_user, action, before_data, after_data):
+        OperationAccessAuditLog.objects.create(
+            target_user=target_user,
+            action=action,
+            payload_before=before_data or {},
+            payload_after=after_data or {},
+            created_by=self._actor(),
+            updated_by=self._actor(),
+        )
+
+    @action(detail=False, methods=["get"], url_path="users")
+    def users(self, request):
+        role_filter = (request.query_params.get("role") or "").strip()
+        department_filter = request.query_params.get("department")
+        process_filter = request.query_params.get("process")
+        active_filter = request.query_params.get("active")
+
+        queryset = self.UserModel.objects.all().order_by("username")
+        if active_filter in {"true", "false"}:
+            queryset = queryset.filter(is_active=(active_filter == "true"))
+
+        queryset = queryset.select_related("operation_profile", "operation_profile__role").prefetch_related(
+            "operation_profile__additional_roles",
+            "operation_profile__scopes__role",
+            "operation_profile__scopes__department",
+            "operation_profile__scopes__process",
+            "operation_profile__scopes__shift",
+        )
+
+        rows = []
+        for user in queryset:
+            row = self._build_user_row(user)
+            if role_filter and row["role"] != role_filter and role_filter not in row["additional_roles"]:
+                continue
+            if department_filter and not any(str(s.get("department")) == str(department_filter) for s in row["scopes"]):
+                continue
+            if process_filter and not any(str(s.get("process")) == str(process_filter) for s in row["scopes"]):
+                continue
+            rows.append(row)
+
+        serializer = OperationAccessUserListSerializer(rows, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"], url_path="meta")
+    def meta(self, request):
+        return Response(
+            {
+                "roles": OperationRoleSerializer(OperationRole.objects.filter(is_active=True), many=True).data,
+                "departments": [{"id": d.id, "code": d.code, "label": d.label_pt or d.label_jp} for d in Department.objects.all().order_by("code")],
+                "processes": [{"id": p.id, "code": p.code, "label": p.label_pt or p.label_jp} for p in Process.objects.all().order_by("code")],
+                "shifts": [{"id": s.id, "code": s.code, "label": s.label_pt or s.label_jp} for s in Shift.objects.all().order_by("code")],
+            }
+        )
+
+    @action(detail=False, methods=["get", "patch"], url_path=r"users/(?P<user_id>\d+)/profile")
+    def user_profile(self, request, user_id=None):
+        user = get_object_or_404(self.UserModel, pk=user_id)
+        profile = self._get_or_create_profile(user)
+
+        if request.method == "GET":
+            return Response(UserOperationProfileSerializer(profile).data)
+
+        before_data = UserOperationProfileSerializer(profile).data
+        serializer = UserOperationProfileSerializer(profile, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(updated_by=self._actor())
+        after_data = UserOperationProfileSerializer(profile).data
+        self._audit(
+            target_user=user,
+            action=OperationAccessAuditLog.Action.PROFILE_UPDATED,
+            before_data=before_data,
+            after_data=after_data,
+        )
+        return Response(after_data)
+
+    @action(detail=False, methods=["put"], url_path=r"users/(?P<user_id>\d+)/scopes")
+    def replace_scopes(self, request, user_id=None):
+        user = get_object_or_404(self.UserModel, pk=user_id)
+        profile = self._get_or_create_profile(user)
+        scope_items = request.data if isinstance(request.data, list) else request.data.get("scopes", [])
+        if not isinstance(scope_items, list):
+            return Response({"detail": "Formato inválido para scopes."}, status=status.HTTP_400_BAD_REQUEST)
+
+        before_scopes = UserOperationScopeSerializer(
+            profile.scopes.filter(is_active=True).select_related("role", "department", "process", "shift"),
+            many=True,
+        ).data
+
+        with transaction.atomic():
+            profile.scopes.filter(is_active=True).update(is_active=False, updated_by=self._actor())
+            created = []
+            for item in scope_items:
+                serializer = UserOperationScopeSerializer(data=item)
+                serializer.is_valid(raise_exception=True)
+                created.append(
+                    serializer.save(profile=profile, created_by=self._actor(), updated_by=self._actor())
+                )
+
+        after_scopes = UserOperationScopeSerializer(created, many=True).data
+        self._audit(
+            target_user=user,
+            action=OperationAccessAuditLog.Action.SCOPES_REPLACED,
+            before_data={"scopes": before_scopes},
+            after_data={"scopes": after_scopes},
+        )
+        return Response({"scopes": after_scopes})
+
+    @action(detail=False, methods=["get"], url_path="audit")
+    def audit(self, request):
+        user_id = request.query_params.get("user")
+        queryset = OperationAccessAuditLog.objects.select_related("created_by", "target_user")
+        if user_id:
+            queryset = queryset.filter(target_user_id=user_id)
+        queryset = queryset[:200]
+        return Response(OperationAccessAuditLogSerializer(queryset, many=True).data)
+
+
 class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):
     queryset = MonthlyOperationCalendar.objects.select_related("department", "process", "shift")
     serializer_class = MonthlyOperationCalendarSerializer
-    permission_classes = [OperationsCalendarPermission]
+    permission_classes = [ScheduleWritePermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return _apply_operational_scope_filter(
+            queryset,
+            self.request.user,
+            department_field="department_id",
+            process_field="process_id",
+            shift_field="shift_id",
+        )
 
     def _ordered_assignments_queryset(self, calendar):
         queryset = calendar.assignments.select_related(
