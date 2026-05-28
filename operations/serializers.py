@@ -20,6 +20,12 @@ from .models import (
     HikitsuguiOccurrenceCategory,
     HikitsuguiReport,
     HikitsuguiItem,
+    ProductionMonitorSource,
+    ProductionSnapshot,
+    ProductionMachineStatus,
+    ProductionMetrics,
+    OperationsSettings,
+    EmployeeAdministrativeNote,
     WorkTimeCode,
 )
 from .services import get_operational_rank, get_visual_category_from_master
@@ -575,3 +581,162 @@ class HikitsuguiReportSerializer(serializers.ModelSerializer):
 
     def get_open_items_count(self, obj):
         return obj.items.exclude(status=HikitsuguiItem.Status.RESOLVED).count()
+
+
+class ProductionMonitorSourceSerializer(serializers.ModelSerializer):
+    process_code = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductionMonitorSource
+        fields = [
+            "id",
+            "name",
+            "source_type",
+            "process",
+            "process_code",
+            "area",
+            "poll_seconds",
+            "is_default",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "process_code", "created_at", "updated_at"]
+
+    def get_process_code(self, obj):
+        return getattr(obj.process, "code", None)
+
+
+class ProductionMachineStatusSerializer(serializers.ModelSerializer):
+    difference = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductionMachineStatus
+        fields = [
+            "id",
+            "snapshot",
+            "machine_code",
+            "equipment_name",
+            "status",
+            "production_actual",
+            "production_target",
+            "difference",
+            "kadouritsu",
+            "run_minutes",
+            "stop_minutes",
+            "last_update_at",
+            "alarm_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "difference", "created_at", "updated_at"]
+
+    def get_difference(self, obj):
+        return (obj.production_actual or 0) - (obj.production_target or 0)
+
+
+class ProductionMetricsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductionMetrics
+        fields = [
+            "id",
+            "snapshot",
+            "total_actual",
+            "total_target",
+            "average_kadouritsu",
+            "running_count",
+            "stopped_count",
+            "idle_count",
+            "error_count",
+            "alarms_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class ProductionSnapshotSerializer(serializers.ModelSerializer):
+    source_detail = ProductionMonitorSourceSerializer(source="source", read_only=True)
+    process_code = serializers.SerializerMethodField()
+    shift_code = serializers.SerializerMethodField()
+    machine_statuses = ProductionMachineStatusSerializer(many=True, read_only=True)
+    metrics = ProductionMetricsSerializer(read_only=True)
+
+    class Meta:
+        model = ProductionSnapshot
+        fields = [
+            "id",
+            "source",
+            "source_detail",
+            "captured_at",
+            "shift",
+            "shift_code",
+            "process",
+            "process_code",
+            "area",
+            "machine_statuses",
+            "metrics",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "source_detail",
+            "shift_code",
+            "process_code",
+            "machine_statuses",
+            "metrics",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_process_code(self, obj):
+        return getattr(obj.process, "code", None)
+
+    def get_shift_code(self, obj):
+        return getattr(obj.shift, "code", None)
+
+
+class OperationsSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OperationsSettings
+        fields = [
+            "id",
+            "weekly_warning_hours",
+            "weekly_critical_hours",
+            "monthly_overtime_warning_hours",
+            "monthly_overtime_critical_hours",
+            "consecutive_absence_warning",
+            "recurrent_late_warning",
+            "enable_kajuuroudou_alerts",
+            "notes",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "updated_at"]
+
+
+class EmployeeAdministrativeNoteSerializer(serializers.ModelSerializer):
+    employee_detail = EmployeeSerializer(source="employee", read_only=True)
+    created_by_username = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EmployeeAdministrativeNote
+        fields = [
+            "id",
+            "employee",
+            "employee_detail",
+            "date",
+            "category",
+            "severity",
+            "note",
+            "related_period_start",
+            "related_period_end",
+            "created_by",
+            "created_by_username",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "employee_detail", "created_by", "created_by_username", "created_at", "updated_at"]
+
+    def get_created_by_username(self, obj):
+        return getattr(obj.created_by, "username", None)

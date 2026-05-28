@@ -1,10 +1,13 @@
-from datetime import date, time
+from datetime import date, datetime, time
 from io import BytesIO
+from tempfile import NamedTemporaryFile
 
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.test import TestCase
+from django.utils import timezone
 from openpyxl import load_workbook
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -26,10 +29,17 @@ from .models import (
     OperationCalendarTemplateCell,
     OperationCalendarHistory,
     PositionDailyRequirement,
+    ProductionMachineStatus,
+    ProductionMetrics,
+    ProductionMonitorSource,
+    ProductionSnapshot,
+    OperationsSettings,
+    EmployeeAdministrativeNote,
     RotationGroupStyle,
     WorkTimeCode,
     HikitsuguiOccurrenceCategory,
 )
+from .services import parse_production_file
 
 
 class OperationsCalendarModelTests(TestCase):
@@ -1938,3 +1948,295 @@ class OperationsCalendarAPITests(TestCase):
 
         self.assertEqual(read_response.status_code, status.HTTP_200_OK)
         self.assertEqual(write_response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_production_dashboard_returns_mock_when_empty(self):
+        response = self.client.get("/api/operations/production-snapshots/dashboard/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["is_mock"])
+        self.assertIn("kpis", response.data)
+        self.assertGreater(len(response.data["machines"]), 0)
+
+    def test_production_dashboard_filters_by_status(self):
+        source = ProductionMonitorSource.objects.create(name="Fonte Linha A", source_type=ProductionMonitorSource.SourceType.CSV)
+        snapshot = ProductionSnapshot.objects.create(
+            source=source,
+            captured_at=timezone.make_aware(datetime(2026, 5, 27, 8, 0, 0)),
+            process=self.process,
+            shift=self.shift,
+            area="Linha A",
+        )
+        ProductionMachineStatus.objects.create(
+            snapshot=snapshot,
+            machine_code="M1",
+            equipment_name="Prensa",
+            status=ProductionMachineStatus.MachineState.RUNNING,
+            production_actual=100,
+            production_target=120,
+            run_minutes=80,
+            stop_minutes=10,
+            alarm_active=False,
+        )
+        ProductionMachineStatus.objects.create(
+            snapshot=snapshot,
+            machine_code="M2",
+            equipment_name="Solda",
+            status=ProductionMachineStatus.MachineState.STOPPED,
+            production_actual=80,
+            production_target=120,
+            run_minutes=50,
+            stop_minutes=40,
+            alarm_active=True,
+        )
+        ProductionMetrics.objects.create(
+            snapshot=snapshot,
+            total_actual=180,
+            total_target=240,
+            average_kadouritsu=75,
+            running_count=1,
+            stopped_count=1,
+            idle_count=0,
+            error_count=0,
+            alarms_active=1,
+        )
+
+        response = self.client.get("/api/operations/production-snapshots/dashboard/?status=stopped")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["is_mock"])
+        self.assertEqual(len(response.data["machines"]), 1)
+        self.assertEqual(response.data["machines"][0]["status"], "stopped")
+
+    def test_attendance_dashboard_aggregation_and_filters(self):
+        calendar = self._create_calendar(year=2026, month=5, title="Attendance test")
+        assignment = self._create_assignment(calendar["id"])
+        late_status = AttendanceStatus.objects.create(
+            code="late_custom",
+            label_pt="Atraso",
+            label_jp="遅刻",
+            is_working_day=True,
+            is_absence=False,
+        )
+        absence_status = AttendanceStatus.objects.get(code="absence")
+        work_status = AttendanceStatus.objects.get(code="work")
+
+        self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-01",
+                "attendance_status": work_status.id,
+                "overtime_minutes": 120,
+                "actual_work_minutes": 600,
+            },
+            format="json",
+        )
+        self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-02",
+                "attendance_status": late_status.id,
+                "overtime_minutes": 60,
+                "actual_work_minutes": 540,
+            },
+            format="json",
+        )
+        self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-03",
+                "attendance_status": absence_status.id,
+                "overtime_minutes": 0,
+                "actual_work_minutes": 0,
+            },
+            format="json",
+        )
+
+        response = self.client.get("/api/operations/attendance-dashboard/?month=2026-05")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["kpis"]["total_scheduled_employees"], 1)
+        self.assertEqual(response.data["kpis"]["absences"], 1)
+        self.assertGreaterEqual(response.data["kpis"]["lates"], 1)
+        self.assertIn("employee_rankings", response.data)
+
+        filtered = self.client.get(f"/api/operations/attendance-dashboard/?month=2026-05&process={self.process.id}")
+        self.assertEqual(filtered.status_code, status.HTTP_200_OK)
+
+    def test_operations_settings_endpoint_get_and_patch(self):
+        get_response = self.client.get("/api/operations/settings/current/")
+        self.assertEqual(get_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(float(get_response.data["weekly_warning_hours"]), 50.0)
+
+        patch_response = self.client.patch(
+            "/api/operations/settings/current/",
+            {
+                "weekly_warning_hours": 40,
+                "weekly_critical_hours": 55,
+                "monthly_overtime_warning_hours": 30,
+                "monthly_overtime_critical_hours": 50,
+                "consecutive_absence_warning": 1,
+                "recurrent_late_warning": 1,
+            },
+            format="json",
+        )
+        self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(float(patch_response.data["weekly_warning_hours"]), 40.0)
+
+    def test_attendance_dashboard_uses_configurable_thresholds(self):
+        settings = OperationsSettings.load()
+        settings.weekly_warning_hours = 1
+        settings.weekly_critical_hours = 2
+        settings.monthly_overtime_warning_hours = 1
+        settings.monthly_overtime_critical_hours = 2
+        settings.save()
+
+        calendar = self._create_calendar(year=2026, month=5, title="Threshold test")
+        assignment = self._create_assignment(calendar["id"])
+        work_status = AttendanceStatus.objects.get(code="work")
+        self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-01",
+                "attendance_status": work_status.id,
+                "overtime_minutes": 180,
+                "actual_work_minutes": 300,
+            },
+            format="json",
+        )
+        response = self.client.get("/api/operations/attendance-dashboard/?month=2026-05")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(len(response.data["risk_alerts"]), 1)
+
+    def test_attendance_dashboard_employee_detail_endpoint(self):
+        calendar = self._create_calendar(year=2026, month=5, title="Employee detail test")
+        assignment = self._create_assignment(calendar["id"])
+        work_status = AttendanceStatus.objects.get(code="work")
+        self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-10",
+                "attendance_status": work_status.id,
+                "overtime_minutes": 90,
+                "actual_work_minutes": 540,
+                "memo": "Observacao teste",
+            },
+            format="json",
+        )
+        response = self.client.get(f"/api/operations/attendance-dashboard/employees/{self.employee.employee_id}/?month=2026-05")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["employee"]["employee_id"], self.employee.employee_id)
+        self.assertGreaterEqual(len(response.data["daily_history"]), 1)
+
+    def test_employee_admin_notes_create_list_and_dashboard_detail(self):
+        calendar = self._create_calendar(year=2026, month=5, title="Notes detail test")
+        assignment = self._create_assignment(calendar["id"])
+        work_status = AttendanceStatus.objects.get(code="work")
+        self.client.post(
+            f"/api/operations/calendars/{calendar['id']}/cells/",
+            {
+                "assignment": assignment["id"],
+                "date": "2026-05-28",
+                "attendance_status": work_status.id,
+                "overtime_minutes": 30,
+                "actual_work_minutes": 480,
+            },
+            format="json",
+        )
+
+        response = self.client.post(
+            "/api/operations/employee-admin-notes/",
+            {
+                "employee": self.employee.pk,
+                "date": "2026-05-28",
+                "category": "horas_extras",
+                "severity": "warning",
+                "note": "Acúmulo de HE no período.",
+                "related_period_start": "2026-05-01",
+                "related_period_end": "2026-05-28",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        list_response = self.client.get(f"/api/operations/employee-admin-notes/?employee={self.employee.employee_id}")
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        items = list_response.data if isinstance(list_response.data, list) else list_response.data.get("results", [])
+        self.assertGreaterEqual(len(items), 1)
+
+        detail_response = self.client.get(f"/api/operations/attendance-dashboard/employees/{self.employee.employee_id}/?month=2026-05")
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertIn("administrative_notes", detail_response.data)
+
+    def test_parse_production_csv_valid(self):
+        source = ProductionMonitorSource.objects.create(name="Fonte CSV", source_type=ProductionMonitorSource.SourceType.CSV)
+        with NamedTemporaryFile("w", suffix=".csv", delete=True) as fp:
+            fp.write(
+                "machine_code,equipment_name,status,production_count,target_count,running_minutes,stopped_minutes,alarm_code,timestamp\n"
+                "M1,Prensa,running,120,150,80,10,0,2026-05-27 08:00:00\n"
+            )
+            fp.flush()
+            parsed = parse_production_file(source, fp.name, encoding="utf-8", delimiter="auto")
+        self.assertEqual(len(parsed["rows"]), 1)
+        self.assertEqual(parsed["rows"][0]["machine_code"], "M1")
+        self.assertEqual(parsed["rows"][0]["status"], "running")
+
+    def test_parse_production_txt_tab_and_numeric_status(self):
+        source = ProductionMonitorSource.objects.create(name="Fonte TXT", source_type=ProductionMonitorSource.SourceType.TXT)
+        with NamedTemporaryFile("w", suffix=".txt", delete=True) as fp:
+            fp.write(
+                "machine_code\tequipment_name\tstatus\tproduction_count\ttarget_count\trunning_minutes\tstopped_minutes\talarm_code\ttimestamp\n"
+                "M2\tSolda\t1\t88\t100\t50\t40\tE101\t2026/05/27 08:10:00\n"
+            )
+            fp.flush()
+            parsed = parse_production_file(source, fp.name, encoding="utf-8", delimiter="tab")
+        self.assertEqual(parsed["rows"][0]["status"], "stopped")
+        self.assertTrue(parsed["rows"][0]["alarm_active"])
+
+    def test_import_production_snapshot_dry_run_does_not_persist(self):
+        source = ProductionMonitorSource.objects.create(name="Fonte DryRun", source_type=ProductionMonitorSource.SourceType.CSV)
+        existing_count = ProductionSnapshot.objects.count()
+        with NamedTemporaryFile("w", suffix=".csv", delete=True) as fp:
+            fp.write(
+                "machine_code,equipment_name,status,production_count,target_count,running_minutes,stopped_minutes,alarm_code,timestamp\n"
+                "M3,Montagem,0,200,220,110,15,0,2026-05-27T08:20:00\n"
+            )
+            fp.flush()
+            call_command(
+                "import_production_snapshot",
+                "--source",
+                str(source.id),
+                "--file",
+                fp.name,
+                "--dry-run",
+            )
+        self.assertEqual(ProductionSnapshot.objects.count(), existing_count)
+
+    def test_import_production_snapshot_persists_snapshot_status_and_metrics(self):
+        source = ProductionMonitorSource.objects.create(name="Fonte Import", source_type=ProductionMonitorSource.SourceType.CSV)
+        existing_count = ProductionSnapshot.objects.count()
+        with NamedTemporaryFile("w", suffix=".csv", delete=True) as fp:
+            fp.write(
+                "machine_code,equipment_name,status,production_count,target_count,running_minutes,stopped_minutes,alarm_code,timestamp\n"
+                "M4,Linha 4,3,10,100,10,120,E401,2026-05-27 08:30:00\n"
+                "M5,Linha 5,0,95,100,105,20,0,2026-05-27 08:30:00\n"
+            )
+            fp.flush()
+            call_command(
+                "import_production_snapshot",
+                "--source",
+                str(source.id),
+                "--file",
+                fp.name,
+                "--encoding",
+                "utf-8",
+                "--delimiter",
+                ",",
+            )
+        self.assertEqual(ProductionSnapshot.objects.count(), existing_count + 1)
+        snapshot = ProductionSnapshot.objects.order_by("-id").first()
+        self.assertEqual(snapshot.machine_statuses.count(), 2)
+        self.assertTrue(hasattr(snapshot, "metrics"))
+        self.assertEqual(snapshot.metrics.error_count, 1)
+        self.assertEqual(snapshot.metrics.running_count, 1)

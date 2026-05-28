@@ -7,6 +7,13 @@ from .views import (
     HikitsuguiItemViewSet,
     HikitsuguiOccurrenceCategoryViewSet,
     HikitsuguiReportViewSet,
+    ProductionMachineStatusViewSet,
+    ProductionMetricsViewSet,
+    ProductionMonitorSourceViewSet,
+    ProductionSnapshotViewSet,
+    OperationsSettingsViewSet,
+    EmployeeAdministrativeNoteViewSet,
+    AttendanceDashboardViewSet,
     MonthlyOperationCalendarViewSet,
     OperationalCodeViewSet,
     OperationalPositionViewSet,
@@ -29,6 +36,13 @@ router.register("calendar-templates", OperationCalendarTemplateViewSet, basename
 router.register("hikitsugui-categories", HikitsuguiOccurrenceCategoryViewSet, basename="operations-hikitsugui-categories")
 router.register("hikitsugui-reports", HikitsuguiReportViewSet, basename="operations-hikitsugui-reports")
 router.register("hikitsugui-items", HikitsuguiItemViewSet, basename="operations-hikitsugui-items")
+router.register("production-monitor-sources", ProductionMonitorSourceViewSet, basename="operations-production-monitor-sources")
+router.register("production-snapshots", ProductionSnapshotViewSet, basename="operations-production-snapshots")
+router.register("production-machine-statuses", ProductionMachineStatusViewSet, basename="operations-production-machine-statuses")
+router.register("production-metrics", ProductionMetricsViewSet, basename="operations-production-metrics")
+router.register("attendance-dashboard", AttendanceDashboardViewSet, basename="operations-attendance-dashboard")
+router.register("settings", OperationsSettingsViewSet, basename="operations-settings")
+router.register("employee-admin-notes", EmployeeAdministrativeNoteViewSet, basename="operations-employee-admin-notes")
 
 urlpatterns = [
     path("", include(router.urls)),

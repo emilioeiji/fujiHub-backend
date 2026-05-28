@@ -1,12 +1,16 @@
 import re
+import csv
 from calendar import monthrange
 from dataclasses import dataclass
-from datetime import date, time, timedelta
+from datetime import date, datetime, time, timedelta
+from pathlib import Path
 
 from django.db import transaction
 from django.db.models import Max
+from django.utils import timezone
 
 from master.models import Employee
+from master.models import Process, Shift
 
 from .models import (
     AttendanceStatus,
@@ -14,6 +18,10 @@ from .models import (
     CalendarEmployeeAssignment,
     OperationalCode,
     OperationalPosition,
+    ProductionMachineStatus,
+    ProductionMetrics,
+    ProductionSnapshot,
+    ProductionMonitorSource,
     WorkTimeCode,
 )
 
@@ -23,6 +31,38 @@ FOUR_TWO_GROUP_OFFSETS = {"A": 0, "B": 2, "C": 4}
 DEFAULT_FIVE_TWO_OFF_DAYS = [5, 6]
 FIVE_TWO_KEYWORDS = {"supervisor", "manager", "staff", "管理", "スタッフ"}
 SPECIAL_ALL_OT_CODES = {"sunday", "holiday_work", "sunday_teiji", "holiday_work_teiji"}
+PRODUCTION_STATUS_MAP = {
+    "running": ProductionMachineStatus.MachineState.RUNNING,
+    "run": ProductionMachineStatus.MachineState.RUNNING,
+    "rodando": ProductionMachineStatus.MachineState.RUNNING,
+    "0": ProductionMachineStatus.MachineState.RUNNING,
+    "stopped": ProductionMachineStatus.MachineState.STOPPED,
+    "stop": ProductionMachineStatus.MachineState.STOPPED,
+    "parado": ProductionMachineStatus.MachineState.STOPPED,
+    "1": ProductionMachineStatus.MachineState.STOPPED,
+    "idle": ProductionMachineStatus.MachineState.IDLE,
+    "sem_producao": ProductionMachineStatus.MachineState.IDLE,
+    "sem producao": ProductionMachineStatus.MachineState.IDLE,
+    "2": ProductionMachineStatus.MachineState.IDLE,
+    "error": ProductionMachineStatus.MachineState.ERROR,
+    "erro": ProductionMachineStatus.MachineState.ERROR,
+    "alarm": ProductionMachineStatus.MachineState.ERROR,
+    "3": ProductionMachineStatus.MachineState.ERROR,
+}
+PRODUCTION_FIELD_ALIASES = {
+    "machine_code": {"machine_code", "machine", "machineid", "maquina", "equipamento_codigo"},
+    "equipment_name": {"equipment_name", "equipment", "equipamento", "machine_name"},
+    "process": {"process", "processo"},
+    "area": {"area", "linha", "setor"},
+    "shift": {"shift", "turno"},
+    "status": {"status", "machine_status", "estado"},
+    "production_count": {"production_count", "production", "actual", "real", "producao", "production_actual"},
+    "target_count": {"target_count", "target", "meta", "pedido", "production_target"},
+    "running_minutes": {"running_minutes", "run_minutes", "tempo_rodando"},
+    "stopped_minutes": {"stopped_minutes", "stop_minutes", "tempo_parado"},
+    "alarm_code": {"alarm_code", "alarm", "alarme"},
+    "timestamp": {"timestamp", "datetime", "datahora", "updated_at", "last_update"},
+}
 
 
 @dataclass
@@ -866,3 +906,326 @@ def _build_lookup(queryset, fields):
 
 def _normalize_lookup_value(value):
     return str(value or "").strip().casefold()
+
+
+def parse_production_file(source, file_path, *, encoding="utf-8", delimiter="auto"):
+    file_content = Path(file_path).read_text(encoding=encoding)
+    rows = [line for line in file_content.splitlines() if line.strip()]
+    if not rows:
+        raise ValueError("Arquivo vazio.")
+
+    resolved_delimiter = _resolve_delimiter(rows[0], delimiter)
+    reader = csv.DictReader(rows, delimiter=resolved_delimiter)
+    if not reader.fieldnames:
+        raise ValueError("Arquivo sem cabeçalho válido.")
+
+    field_map = _build_production_field_map(reader.fieldnames)
+    normalized_rows = []
+    warnings = []
+    captured_at = None
+
+    for idx, row in enumerate(reader, start=2):
+        normalized = _normalize_production_row(row, field_map, source=source)
+        if not normalized:
+            continue
+        normalized_rows.append(normalized)
+        row_timestamp = normalized.get("timestamp")
+        if row_timestamp and (captured_at is None or row_timestamp > captured_at):
+            captured_at = row_timestamp
+        if normalized.get("status") == "unknown":
+            warnings.append(f"Linha {idx}: status desconhecido, aplicado 'unknown'.")
+
+    if not normalized_rows:
+        raise ValueError("Nenhum registro válido encontrado no arquivo.")
+
+    return {
+        "rows": normalized_rows,
+        "captured_at": captured_at or timezone.now(),
+        "delimiter": resolved_delimiter,
+        "warnings": warnings,
+    }
+
+
+def import_production_snapshot(
+    *,
+    source,
+    file_path,
+    encoding="utf-8",
+    delimiter="auto",
+    shift=None,
+    process=None,
+    area="",
+    dry_run=False,
+    user=None,
+):
+    parsed = parse_production_file(source, file_path, encoding=encoding, delimiter=delimiter)
+    rows = parsed["rows"]
+    captured_at = parsed["captured_at"]
+    shift_obj = _resolve_shift(shift)
+    process_obj = _resolve_process(process)
+    area_value = area or (rows[0].get("area") if rows else "") or getattr(source, "area", "")
+
+    normalized_rows = []
+    for row in rows:
+        row_process = process_obj or _resolve_process(row.get("process"))
+        row_shift = shift_obj or _resolve_shift(row.get("shift"))
+        normalized_rows.append(
+            {
+                **row,
+                "process": row_process,
+                "shift": row_shift,
+            }
+        )
+
+    if dry_run:
+        metrics = _calculate_production_metrics(normalized_rows)
+        return {
+            "dry_run": True,
+            "created_snapshot_id": None,
+            "rows_count": len(normalized_rows),
+            "metrics": metrics,
+            "captured_at": captured_at,
+            "warnings": parsed["warnings"],
+        }
+
+    with transaction.atomic():
+        duplicate_exists = ProductionSnapshot.objects.filter(
+            source=source,
+            captured_at=captured_at,
+            process=process_obj,
+            shift=shift_obj,
+            area=area_value,
+        ).exists()
+        if duplicate_exists:
+            captured_at = captured_at + timedelta(seconds=1)
+            parsed["warnings"].append("Timestamp duplicado detectado; nova versão criada com +1s.")
+
+        snapshot = ProductionSnapshot.objects.create(
+            source=source,
+            captured_at=captured_at,
+            shift=shift_obj,
+            process=process_obj,
+            area=area_value,
+            created_by=user,
+            updated_by=user,
+        )
+
+        machine_objects = []
+        for row in normalized_rows:
+            target_count = row["target_count"]
+            actual_count = row["production_count"]
+            kadouritsu = round((actual_count / target_count) * 100, 2) if target_count > 0 else 0
+            machine_objects.append(
+                ProductionMachineStatus(
+                    snapshot=snapshot,
+                    machine_code=row["machine_code"],
+                    equipment_name=row["equipment_name"],
+                    status=row["status"],
+                    production_actual=actual_count,
+                    production_target=target_count,
+                    kadouritsu=kadouritsu,
+                    run_minutes=row["running_minutes"],
+                    stop_minutes=row["stopped_minutes"],
+                    last_update_at=row["timestamp"],
+                    alarm_active=row["alarm_active"],
+                    created_by=user,
+                    updated_by=user,
+                )
+            )
+        ProductionMachineStatus.objects.bulk_create(machine_objects)
+        metrics_data = _calculate_production_metrics(normalized_rows)
+        ProductionMetrics.objects.create(
+            snapshot=snapshot,
+            total_actual=metrics_data["production_total"],
+            total_target=metrics_data["target_total"],
+            average_kadouritsu=metrics_data["average_kadouritsu"],
+            running_count=metrics_data["running_count"],
+            stopped_count=metrics_data["stopped_count"],
+            idle_count=metrics_data["idle_count"],
+            error_count=metrics_data["error_count"],
+            alarms_active=metrics_data["alarms_active"],
+            created_by=user,
+            updated_by=user,
+        )
+
+    return {
+        "dry_run": False,
+        "created_snapshot_id": snapshot.id,
+        "rows_count": len(normalized_rows),
+        "metrics": metrics_data,
+        "captured_at": captured_at,
+        "warnings": parsed["warnings"],
+    }
+
+
+def _resolve_delimiter(header_line, delimiter):
+    if delimiter in {",", "tab", "semicolon"}:
+        if delimiter == "tab":
+            return "\t"
+        if delimiter == "semicolon":
+            return ";"
+        return delimiter
+    if delimiter not in {"auto", None, ""}:
+        return delimiter
+    candidates = [(",", header_line.count(",")), ("\t", header_line.count("\t")), (";", header_line.count(";"))]
+    candidates.sort(key=lambda item: item[1], reverse=True)
+    return candidates[0][0] if candidates[0][1] > 0 else ","
+
+
+def _build_production_field_map(fieldnames):
+    mapping = {}
+    normalized = {name: _normalize_lookup_value(name).replace("-", "_").replace(" ", "_") for name in fieldnames}
+    for target_field, aliases in PRODUCTION_FIELD_ALIASES.items():
+        for original, normalized_name in normalized.items():
+            if normalized_name in aliases:
+                mapping[target_field] = original
+                break
+    missing = [required for required in ("machine_code", "status", "production_count", "target_count") if required not in mapping]
+    if missing:
+        raise ValueError(f"Cabeçalho inválido. Campos obrigatórios ausentes: {', '.join(missing)}")
+    return mapping
+
+
+def _normalize_production_row(row, field_map, *, source):
+    machine_code = _read_field(row, field_map, "machine_code")
+    if not machine_code:
+        return None
+    equipment_name = _read_field(row, field_map, "equipment_name") or machine_code
+    status_token = _read_field(row, field_map, "status")
+    status = _normalize_production_status(status_token)
+    production_count = _to_int(_read_field(row, field_map, "production_count"))
+    target_count = _to_int(_read_field(row, field_map, "target_count"))
+    running_minutes = _to_int(_read_field(row, field_map, "running_minutes"))
+    stopped_minutes = _to_int(_read_field(row, field_map, "stopped_minutes"))
+    alarm_code = _read_field(row, field_map, "alarm_code")
+    timestamp_value = _read_field(row, field_map, "timestamp")
+
+    return {
+        "machine_code": machine_code,
+        "equipment_name": equipment_name,
+        "process": _read_field(row, field_map, "process") or getattr(getattr(source, "process", None), "code", ""),
+        "area": _read_field(row, field_map, "area") or getattr(source, "area", ""),
+        "shift": _read_field(row, field_map, "shift"),
+        "status": status,
+        "production_count": production_count,
+        "target_count": target_count,
+        "running_minutes": running_minutes,
+        "stopped_minutes": stopped_minutes,
+        "alarm_active": _normalize_alarm(alarm_code),
+        "timestamp": _parse_timestamp(timestamp_value),
+    }
+
+
+def _read_field(row, field_map, target):
+    source_key = field_map.get(target)
+    if not source_key:
+        return ""
+    return str(row.get(source_key, "") or "").strip()
+
+
+def _normalize_production_status(value):
+    token = _normalize_lookup_value(value).replace("-", "_")
+    return PRODUCTION_STATUS_MAP.get(token, "unknown")
+
+
+def _normalize_alarm(value):
+    token = _normalize_lookup_value(value)
+    if token in {"", "0", "ok", "none", "normal"}:
+        return False
+    return True
+
+
+def _to_int(value):
+    token = str(value or "").strip()
+    if not token:
+        return 0
+    token = token.replace(",", "")
+    try:
+        return int(float(token))
+    except ValueError:
+        return 0
+
+
+def _parse_timestamp(value):
+    token = str(value or "").strip()
+    if not token:
+        return timezone.now()
+    formats = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S.%f",
+    ]
+    for fmt in formats:
+        try:
+            parsed = datetime.strptime(token, fmt)
+            return timezone.make_aware(parsed) if timezone.is_naive(parsed) else parsed
+        except ValueError:
+            continue
+    try:
+        parsed = datetime.fromisoformat(token)
+        return timezone.make_aware(parsed) if timezone.is_naive(parsed) else parsed
+    except ValueError:
+        return timezone.now()
+
+
+def _resolve_shift(value):
+    if not value:
+        return None
+    token = str(value).strip()
+    if not token:
+        return None
+    if token.isdigit():
+        return Shift.objects.filter(pk=int(token)).first()
+    return Shift.objects.filter(code__iexact=token).first()
+
+
+def _resolve_process(value):
+    if not value:
+        return None
+    token = str(value).strip()
+    if not token:
+        return None
+    if token.isdigit():
+        return Process.objects.filter(pk=int(token)).first()
+    return Process.objects.filter(code__iexact=token).first()
+
+
+def _calculate_production_metrics(rows):
+    production_total = sum(item["production_count"] for item in rows)
+    target_total = sum(item["target_count"] for item in rows)
+    kadouritsu_list = []
+    running_count = 0
+    stopped_count = 0
+    idle_count = 0
+    error_count = 0
+    alarms_active = 0
+
+    for item in rows:
+        target = item["target_count"]
+        actual = item["production_count"]
+        kadouritsu_list.append((actual / target) * 100 if target > 0 else 0)
+        status = item["status"]
+        if status == ProductionMachineStatus.MachineState.RUNNING:
+            running_count += 1
+        elif status == ProductionMachineStatus.MachineState.STOPPED:
+            stopped_count += 1
+        elif status == ProductionMachineStatus.MachineState.IDLE:
+            idle_count += 1
+        elif status == ProductionMachineStatus.MachineState.ERROR:
+            error_count += 1
+        if item["alarm_active"]:
+            alarms_active += 1
+
+    average_kadouritsu = round(sum(kadouritsu_list) / len(kadouritsu_list), 2) if kadouritsu_list else 0
+    return {
+        "production_total": production_total,
+        "target_total": target_total,
+        "difference_total": production_total - target_total,
+        "average_kadouritsu": average_kadouritsu,
+        "running_count": running_count,
+        "stopped_count": stopped_count,
+        "idle_count": idle_count,
+        "error_count": error_count,
+        "alarms_active": alarms_active,
+    }

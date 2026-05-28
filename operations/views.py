@@ -5,7 +5,8 @@ from io import StringIO
 
 from django.http import HttpResponse
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, Q, Sum
+from django.db.utils import OperationalError, ProgrammingError
 from django.shortcuts import get_object_or_404
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -30,6 +31,12 @@ from .models import (
     HikitsuguiOccurrenceCategory,
     HikitsuguiReport,
     HikitsuguiItem,
+    ProductionMonitorSource,
+    ProductionSnapshot,
+    ProductionMachineStatus,
+    ProductionMetrics,
+    OperationsSettings,
+    EmployeeAdministrativeNote,
     RotationGroupStyle,
     WorkTimeCode,
 )
@@ -48,6 +55,12 @@ from .serializers import (
     HikitsuguiOccurrenceCategorySerializer,
     HikitsuguiReportSerializer,
     HikitsuguiItemSerializer,
+    ProductionMonitorSourceSerializer,
+    ProductionSnapshotSerializer,
+    ProductionMachineStatusSerializer,
+    ProductionMetricsSerializer,
+    OperationsSettingsSerializer,
+    EmployeeAdministrativeNoteSerializer,
     RotationGroupStyleSerializer,
     WorkTimeCodeSerializer,
 )
@@ -203,6 +216,555 @@ class HikitsuguiItemViewSet(ActorMixin, viewsets.ModelViewSet):
         if priority:
             queryset = queryset.filter(priority=priority)
         return queryset
+
+
+class ProductionMonitorSourceViewSet(ActorMixin, viewsets.ModelViewSet):
+    queryset = ProductionMonitorSource.objects.select_related("process")
+    serializer_class = ProductionMonitorSourceSerializer
+    permission_classes = [OperationsCalendarPermission]
+
+
+class ProductionSnapshotViewSet(ActorMixin, viewsets.ModelViewSet):
+    queryset = ProductionSnapshot.objects.select_related("source", "process", "shift").prefetch_related("machine_statuses")
+    serializer_class = ProductionSnapshotSerializer
+    permission_classes = [OperationsCalendarPermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        params = self.request.query_params
+        process = params.get("process")
+        area = params.get("area")
+        shift = params.get("shift")
+        status_param = params.get("status")
+        if process:
+            queryset = queryset.filter(process_id=process)
+        if area:
+            queryset = queryset.filter(area=area)
+        if shift:
+            queryset = queryset.filter(shift_id=shift)
+        if status_param:
+            queryset = queryset.filter(machine_statuses__status=status_param).distinct()
+        return queryset
+
+    @action(detail=False, methods=["get"], url_path="dashboard")
+    def dashboard(self, request):
+        queryset = self.get_queryset()
+        latest = queryset.first()
+
+        if not latest:
+            mock_machines = [
+                {
+                    "id": 0,
+                    "snapshot": None,
+                    "machine_code": "MCH-01",
+                    "equipment_name": "Linha A - Prensa 01",
+                    "status": "running",
+                    "production_actual": 1220,
+                    "production_target": 1300,
+                    "difference": -80,
+                    "kadouritsu": "93.85",
+                    "run_minutes": 430,
+                    "stop_minutes": 28,
+                    "last_update_at": datetime.now().isoformat(),
+                    "alarm_active": False,
+                },
+                {
+                    "id": 0,
+                    "snapshot": None,
+                    "machine_code": "MCH-02",
+                    "equipment_name": "Linha A - Solda 02",
+                    "status": "stopped",
+                    "production_actual": 860,
+                    "production_target": 1300,
+                    "difference": -440,
+                    "kadouritsu": "66.15",
+                    "run_minutes": 305,
+                    "stop_minutes": 153,
+                    "last_update_at": datetime.now().isoformat(),
+                    "alarm_active": True,
+                },
+                {
+                    "id": 0,
+                    "snapshot": None,
+                    "machine_code": "MCH-03",
+                    "equipment_name": "Linha B - Montagem 03",
+                    "status": "idle",
+                    "production_actual": 0,
+                    "production_target": 980,
+                    "difference": -980,
+                    "kadouritsu": "0.00",
+                    "run_minutes": 0,
+                    "stop_minutes": 458,
+                    "last_update_at": datetime.now().isoformat(),
+                    "alarm_active": False,
+                },
+            ]
+            return Response(
+                {
+                    "snapshot": None,
+                    "kpis": {
+                        "production_total": 2080,
+                        "target_total": 3580,
+                        "difference_total": -1500,
+                        "average_kadouritsu": 53.33,
+                        "running_count": 1,
+                        "stopped_count": 1,
+                        "idle_count": 1,
+                        "error_count": 0,
+                        "alarms_active": 1,
+                    },
+                    "machines": mock_machines,
+                    "is_mock": True,
+                }
+            )
+
+        machines_qs = latest.machine_statuses.all()
+        status_param = request.query_params.get("status")
+        if status_param:
+            machines_qs = machines_qs.filter(status=status_param)
+
+        machines_data = ProductionMachineStatusSerializer(machines_qs, many=True).data
+        metrics = getattr(latest, "metrics", None)
+        if metrics:
+            metrics_data = ProductionMetricsSerializer(metrics).data
+            kpis = {
+                "production_total": metrics_data["total_actual"],
+                "target_total": metrics_data["total_target"],
+                "difference_total": (metrics_data["total_actual"] or 0) - (metrics_data["total_target"] or 0),
+                "average_kadouritsu": metrics_data["average_kadouritsu"],
+                "running_count": metrics_data["running_count"],
+                "stopped_count": metrics_data["stopped_count"],
+                "idle_count": metrics_data["idle_count"],
+                "error_count": metrics_data["error_count"],
+                "alarms_active": metrics_data["alarms_active"],
+            }
+        else:
+            production_total = sum((item["production_actual"] or 0) for item in machines_data)
+            target_total = sum((item["production_target"] or 0) for item in machines_data)
+            kadouritsu_values = [float(item["kadouritsu"]) for item in machines_data if item.get("kadouritsu") is not None]
+            kpis = {
+                "production_total": production_total,
+                "target_total": target_total,
+                "difference_total": production_total - target_total,
+                "average_kadouritsu": round((sum(kadouritsu_values) / len(kadouritsu_values)) if kadouritsu_values else 0, 2),
+                "running_count": sum(1 for item in machines_data if item["status"] == "running"),
+                "stopped_count": sum(1 for item in machines_data if item["status"] == "stopped"),
+                "idle_count": sum(1 for item in machines_data if item["status"] == "idle"),
+                "error_count": sum(1 for item in machines_data if item["status"] == "error"),
+                "alarms_active": sum(1 for item in machines_data if item["alarm_active"]),
+            }
+
+        return Response(
+            {
+                "snapshot": ProductionSnapshotSerializer(latest).data,
+                "kpis": kpis,
+                "machines": machines_data,
+                "is_mock": False,
+            }
+        )
+
+
+class ProductionMachineStatusViewSet(ActorMixin, viewsets.ReadOnlyModelViewSet):
+    queryset = ProductionMachineStatus.objects.select_related("snapshot")
+    serializer_class = ProductionMachineStatusSerializer
+    permission_classes = [OperationsCalendarPermission]
+
+
+class ProductionMetricsViewSet(ActorMixin, viewsets.ReadOnlyModelViewSet):
+    queryset = ProductionMetrics.objects.select_related("snapshot")
+    serializer_class = ProductionMetricsSerializer
+    permission_classes = [OperationsCalendarPermission]
+
+
+class OperationsSettingsViewSet(ActorMixin, viewsets.ModelViewSet):
+    queryset = OperationsSettings.objects.all()
+    serializer_class = OperationsSettingsSerializer
+    permission_classes = [OperationsMasterDataPermission]
+
+    def _safe_load_settings(self):
+        try:
+            return OperationsSettings.load()
+        except (OperationalError, ProgrammingError):
+            return OperationsSettings(
+                weekly_warning_hours=50,
+                weekly_critical_hours=60,
+                monthly_overtime_warning_hours=45,
+                monthly_overtime_critical_hours=60,
+                consecutive_absence_warning=2,
+                recurrent_late_warning=3,
+                enable_kajuuroudou_alerts=True,
+                notes="",
+            )
+
+    def get_queryset(self):
+        settings_obj = self._safe_load_settings()
+        if settings_obj.pk:
+            return OperationsSettings.objects.filter(pk=settings_obj.pk)
+        return OperationsSettings.objects.none()
+
+    @action(detail=False, methods=["get", "patch"], url_path="current")
+    def current(self, request):
+        settings_obj = self._safe_load_settings()
+        if request.method == "GET":
+            return Response(self.get_serializer(settings_obj).data)
+        if not settings_obj.pk:
+            return Response({"detail": "Configuração ainda não disponível no banco."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        serializer = self.get_serializer(settings_obj, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(updated_by=self._actor())
+        return Response(serializer.data)
+
+
+class EmployeeAdministrativeNoteViewSet(ActorMixin, viewsets.ModelViewSet):
+    queryset = EmployeeAdministrativeNote.objects.select_related("employee", "created_by", "updated_by")
+    serializer_class = EmployeeAdministrativeNoteSerializer
+    permission_classes = [OperationsCalendarPermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        employee_id = self.request.query_params.get("employee")
+        if employee_id:
+            queryset = queryset.filter(employee__employee_id=employee_id)
+        return queryset
+
+
+class AttendanceDashboardViewSet(viewsets.ViewSet):
+    permission_classes = [OperationsCalendarPermission]
+
+    def _safe_load_settings(self):
+        try:
+            return OperationsSettings.load()
+        except (OperationalError, ProgrammingError):
+            return OperationsSettings(
+                weekly_warning_hours=50,
+                weekly_critical_hours=60,
+                monthly_overtime_warning_hours=45,
+                monthly_overtime_critical_hours=60,
+                consecutive_absence_warning=2,
+                recurrent_late_warning=3,
+                enable_kajuuroudou_alerts=True,
+                notes="",
+            )
+
+    def _filtered_cells_queryset(self, request):
+        params = request.query_params
+        month = params.get("month")
+        date_from = params.get("date_from")
+        date_to = params.get("date_to")
+        department = params.get("department")
+        process = params.get("process")
+        shift = params.get("shift")
+        rotation_group = params.get("group")
+
+        queryset = CalendarDayCell.objects.select_related(
+            "calendar",
+            "assignment",
+            "assignment__employee",
+            "assignment__employee__process",
+            "assignment__employee__shift",
+            "attendance_status",
+            "work_time_code",
+            "operational_code",
+            "position",
+        )
+
+        if month:
+            try:
+                year_str, month_str = month.split("-")
+                queryset = queryset.filter(date__year=int(year_str), date__month=int(month_str))
+            except (ValueError, TypeError):
+                raise ValueError("month inválido. Use YYYY-MM.")
+
+        if date_from:
+            queryset = queryset.filter(date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(date__lte=date_to)
+        if department:
+            queryset = queryset.filter(calendar__department_id=department)
+        if process:
+            queryset = queryset.filter(calendar__process_id=process)
+        if shift:
+            queryset = queryset.filter(calendar__shift_id=shift)
+        if rotation_group:
+            queryset = queryset.filter(assignment__rotation_group=rotation_group)
+        return queryset
+
+    def list(self, request):
+        settings_obj = self._safe_load_settings()
+        try:
+            queryset = self._filtered_cells_queryset(request)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        total_employees = queryset.values("assignment_id").distinct().count()
+        total_records = queryset.count()
+
+        present_count = queryset.filter(
+            Q(attendance_status__is_working_day=True) & Q(attendance_status__is_absence=False)
+        ).count()
+        absence_count = queryset.filter(attendance_status__is_absence=True).count()
+        off_count = queryset.filter(
+            Q(attendance_status__is_working_day=False) & Q(attendance_status__is_absence=False)
+        ).count()
+        late_count = queryset.filter(
+            Q(attendance_status__code__icontains="late") | Q(operational_code__code__icontains="chikoku")
+        ).count()
+        early_leave_count = queryset.filter(
+            Q(attendance_status__code__icontains="early") | Q(operational_code__code__icontains="soutai")
+        ).count()
+        no_status_count = queryset.filter(attendance_status__isnull=True).count()
+
+        overtime_day_minutes = queryset.aggregate(total=Sum("overtime_minutes"))["total"] or 0
+
+        week_start = datetime.now().date() - timedelta(days=datetime.now().date().weekday())
+        month_start = datetime.now().date().replace(day=1)
+        overtime_week_minutes = queryset.filter(date__gte=week_start).aggregate(total=Sum("overtime_minutes"))["total"] or 0
+        overtime_month_minutes = queryset.filter(date__gte=month_start).aggregate(total=Sum("overtime_minutes"))["total"] or 0
+
+        per_assignment = (
+            queryset.values("assignment_id", "assignment__employee__employee_id", "assignment__employee__name_en")
+            .annotate(
+                absences=Count("id", filter=Q(attendance_status__is_absence=True)),
+                lates=Count("id", filter=Q(attendance_status__code__icontains="late") | Q(operational_code__code__icontains="chikoku")),
+                no_status=Count("id", filter=Q(attendance_status__isnull=True)),
+                overtime_minutes=Sum("overtime_minutes"),
+                actual_minutes=Sum("actual_work_minutes"),
+            )
+        )
+
+        by_assignment = list(per_assignment)
+        by_assignment_sorted_absence = sorted(by_assignment, key=lambda item: item["absences"] or 0, reverse=True)
+        by_assignment_sorted_late = sorted(by_assignment, key=lambda item: item["lates"] or 0, reverse=True)
+        by_assignment_sorted_ot = sorted(by_assignment, key=lambda item: item["overtime_minutes"] or 0, reverse=True)
+
+        absences_consecutive = []
+        recurring_lates = []
+        consecutive_absence_threshold = int(settings_obj.consecutive_absence_warning or 2)
+        recurrent_late_threshold = int(settings_obj.recurrent_late_warning or 3)
+        for row in by_assignment:
+            aid = row["assignment_id"]
+            timeline = list(
+                queryset.filter(assignment_id=aid)
+                .order_by("date")
+                .values("date", "attendance_status__is_absence", "attendance_status__code", "operational_code__code")
+            )
+            max_streak = 0
+            current = 0
+            late_hits = 0
+            for entry in timeline:
+                is_abs = bool(entry["attendance_status__is_absence"])
+                if is_abs:
+                    current += 1
+                    max_streak = max(max_streak, current)
+                else:
+                    current = 0
+                status_code = str(entry.get("attendance_status__code") or "").lower()
+                op_code = str(entry.get("operational_code__code") or "").lower()
+                if "late" in status_code or "chikoku" in op_code:
+                    late_hits += 1
+            if max_streak >= consecutive_absence_threshold:
+                absences_consecutive.append({**row, "max_absence_streak": max_streak})
+            if late_hits >= recurrent_late_threshold:
+                recurring_lates.append({**row, "late_hits": late_hits})
+
+        risk_alerts = []
+        if settings_obj.enable_kajuuroudou_alerts:
+            weekly_warning = float(settings_obj.weekly_warning_hours or 50)
+            weekly_critical = float(settings_obj.weekly_critical_hours or 60)
+            monthly_warning = float(settings_obj.monthly_overtime_warning_hours or 45)
+            monthly_critical = float(settings_obj.monthly_overtime_critical_hours or 60)
+            for row in by_assignment:
+                actual_hours = ((row["actual_minutes"] or 0) / 60.0)
+                overtime_hours = ((row["overtime_minutes"] or 0) / 60.0)
+                level = None
+                reasons = []
+                if actual_hours > weekly_critical:
+                    level = "critical"
+                    reasons.append(f"Acima do limite semanal crítico ({weekly_critical}h)")
+                elif actual_hours > weekly_warning:
+                    level = "warning"
+                    reasons.append(f"Acima do limite semanal ({weekly_warning}h)")
+                if overtime_hours > monthly_critical:
+                    level = "critical"
+                    reasons.append(f"Acima do limite mensal crítico ({monthly_critical}h extras)")
+                elif overtime_hours > monthly_warning:
+                    level = level or "warning"
+                    reasons.append(f"Acima do limite mensal ({monthly_warning}h extras)")
+                if overtime_hours > 80:
+                    level = "critical"
+                    reasons.append("Próximo de 80h extras")
+
+                if level:
+                    risk_alerts.append(
+                        {
+                            "assignment_id": row["assignment_id"],
+                            "employee_id": row["assignment__employee__employee_id"],
+                            "employee_name": row["assignment__employee__name_en"],
+                            "actual_hours": round(actual_hours, 2),
+                            "overtime_hours": round(overtime_hours, 2),
+                            "level": level,
+                            "reasons": reasons,
+                        }
+                    )
+
+        return Response(
+            {
+                "kpis": {
+                    "total_scheduled_employees": total_employees,
+                    "present": present_count,
+                    "absences": absence_count,
+                    "lates": late_count,
+                    "early_leaves": early_leave_count,
+                    "offs": off_count,
+                    "overtime_day_hours": round(overtime_day_minutes / 60.0, 2),
+                    "overtime_week_hours": round(overtime_week_minutes / 60.0, 2),
+                    "overtime_month_hours": round(overtime_month_minutes / 60.0, 2),
+                    "risk_people": len(risk_alerts),
+                },
+                "attendance_summary": {
+                    "total_records": total_records,
+                    "without_status": no_status_count,
+                },
+                "overtime_summary": {
+                    "by_employee": [
+                        {
+                            "assignment_id": row["assignment_id"],
+                            "employee_id": row["assignment__employee__employee_id"],
+                            "employee_name": row["assignment__employee__name_en"],
+                            "overtime_hours": round(((row["overtime_minutes"] or 0) / 60.0), 2),
+                        }
+                        for row in by_assignment_sorted_ot[:30]
+                    ]
+                },
+                "risk_alerts": risk_alerts[:50],
+                "settings": OperationsSettingsSerializer(settings_obj).data,
+                "employee_rankings": {
+                    "most_absences_month": [
+                        {
+                            "assignment_id": row["assignment_id"],
+                            "employee_id": row["assignment__employee__employee_id"],
+                            "employee_name": row["assignment__employee__name_en"],
+                            "count": row["absences"] or 0,
+                        }
+                        for row in by_assignment_sorted_absence[:20]
+                    ],
+                    "most_lates_month": [
+                        {
+                            "assignment_id": row["assignment_id"],
+                            "employee_id": row["assignment__employee__employee_id"],
+                            "employee_name": row["assignment__employee__name_en"],
+                            "count": row["lates"] or 0,
+                        }
+                        for row in by_assignment_sorted_late[:20]
+                    ],
+                    "consecutive_absences": absences_consecutive[:20],
+                    "recurring_lates": recurring_lates[:20],
+                    "without_status": [
+                        {
+                            "assignment_id": row["assignment_id"],
+                            "employee_id": row["assignment__employee__employee_id"],
+                            "employee_name": row["assignment__employee__name_en"],
+                            "count": row["no_status"] or 0,
+                        }
+                        for row in sorted(by_assignment, key=lambda item: item["no_status"] or 0, reverse=True)[:20]
+                    ],
+                },
+            }
+        )
+
+    @action(detail=False, methods=["get"], url_path=r"employees/(?P<employee_id>[^/.]+)")
+    def employee_detail(self, request, employee_id=None):
+        settings_obj = self._safe_load_settings()
+        try:
+            queryset = self._filtered_cells_queryset(request)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        queryset = queryset.filter(assignment__employee__employee_id=employee_id)
+        first_cell = queryset.first()
+        if not first_cell:
+            return Response({"detail": "Funcionário sem registros no filtro informado."}, status=status.HTTP_404_NOT_FOUND)
+
+        employee = first_cell.assignment.employee
+        profile = {
+            "employee_pk": employee.pk,
+            "employee_id": employee.employee_id,
+            "name": employee.name_en or employee.internal_name or employee.name_jp or "",
+            "process": getattr(getattr(employee, "process", None), "code", None),
+            "shift": getattr(getattr(employee, "shift", None), "code", None),
+            "group": first_cell.assignment.rotation_group or "",
+        }
+
+        absences = queryset.filter(attendance_status__is_absence=True).count()
+        lates = queryset.filter(Q(attendance_status__code__icontains="late") | Q(operational_code__code__icontains="chikoku")).count()
+        early_leaves = queryset.filter(Q(attendance_status__code__icontains="early") | Q(operational_code__code__icontains="soutai")).count()
+        offs = queryset.filter(Q(attendance_status__is_working_day=False) & Q(attendance_status__is_absence=False)).count()
+
+        daily_rows = list(
+            queryset.order_by("date").values(
+                "date",
+                "attendance_status__code",
+                "attendance_status__label_pt",
+                "operational_code__code",
+                "work_time_code__code",
+                "overtime_minutes",
+                "actual_work_minutes",
+                "memo",
+                "time_note",
+                "raw_value",
+            )
+        )
+        weekly_minutes = sum(item["actual_work_minutes"] or 0 for item in daily_rows)
+        monthly_ot_minutes = sum(item["overtime_minutes"] or 0 for item in daily_rows)
+
+        risk_alerts = []
+        weekly_warning = float(settings_obj.weekly_warning_hours or 50)
+        weekly_critical = float(settings_obj.weekly_critical_hours or 60)
+        monthly_warning = float(settings_obj.monthly_overtime_warning_hours or 45)
+        monthly_critical = float(settings_obj.monthly_overtime_critical_hours or 60)
+        weekly_hours = weekly_minutes / 60.0
+        monthly_ot_hours = monthly_ot_minutes / 60.0
+        if settings_obj.enable_kajuuroudou_alerts:
+            if weekly_hours > weekly_critical:
+                risk_alerts.append(f"Acima do limite semanal crítico ({weekly_critical}h)")
+            elif weekly_hours > weekly_warning:
+                risk_alerts.append(f"Acima do limite semanal ({weekly_warning}h)")
+            if monthly_ot_hours > monthly_critical:
+                risk_alerts.append(f"Acima do limite mensal crítico ({monthly_critical}h extras)")
+            elif monthly_ot_hours > monthly_warning:
+                risk_alerts.append(f"Acima do limite mensal ({monthly_warning}h extras)")
+
+        return Response(
+            {
+                "employee": profile,
+                "summary": {
+                    "absences": absences,
+                    "lates": lates,
+                    "early_leaves": early_leaves,
+                    "offs": offs,
+                    "weekly_overtime_hours": round(monthly_ot_minutes / 60.0, 2),
+                    "monthly_overtime_hours": round(monthly_ot_minutes / 60.0, 2),
+                    "weekly_worked_hours": round(weekly_hours, 2),
+                },
+                "risk_alerts": risk_alerts,
+                "administrative_notes": EmployeeAdministrativeNoteSerializer(
+                    EmployeeAdministrativeNote.objects.filter(employee=employee).select_related("created_by")[:20],
+                    many=True,
+                ).data,
+                "daily_history": [
+                    {
+                        "date": row["date"],
+                        "status": row["attendance_status__label_pt"] or row["attendance_status__code"] or "-",
+                        "status_code": row["attendance_status__code"],
+                        "operational_code": row["operational_code__code"],
+                        "work_time_code": row["work_time_code__code"],
+                        "actual_work_hours": round((row["actual_work_minutes"] or 0) / 60.0, 2),
+                        "overtime_hours": round((row["overtime_minutes"] or 0) / 60.0, 2),
+                        "note": row["memo"] or row["time_note"] or row["raw_value"] or "",
+                    }
+                    for row in daily_rows
+                ],
+            }
+        )
 
 
 class MonthlyOperationCalendarViewSet(ActorMixin, viewsets.ModelViewSet):

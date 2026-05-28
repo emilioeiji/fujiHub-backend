@@ -761,3 +761,184 @@ class HikitsuguiItem(BaseModel):
 
     def __str__(self):
         return self.title
+
+
+class ProductionMonitorSource(BaseModel):
+    class SourceType(models.TextChoices):
+        TXT = "txt", "TXT"
+        CSV = "csv", "CSV"
+        API = "api", "API"
+        MANUAL = "manual", "Manual"
+
+    name = models.CharField(max_length=120)
+    source_type = models.CharField(max_length=20, choices=SourceType.choices, default=SourceType.MANUAL)
+    process = models.ForeignKey(
+        "master.Process",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="production_monitor_sources",
+    )
+    area = models.CharField(max_length=120, blank=True)
+    poll_seconds = models.PositiveIntegerField(default=30)
+    is_default = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["name", "id"]
+
+    def __str__(self):
+        return self.name
+
+
+class ProductionSnapshot(BaseModel):
+    source = models.ForeignKey(
+        ProductionMonitorSource,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="snapshots",
+    )
+    captured_at = models.DateTimeField()
+    shift = models.ForeignKey(
+        "master.Shift",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="production_snapshots",
+    )
+    process = models.ForeignKey(
+        "master.Process",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="production_snapshots",
+    )
+    area = models.CharField(max_length=120, blank=True)
+
+    class Meta:
+        ordering = ["-captured_at", "-id"]
+        indexes = [
+            models.Index(fields=["captured_at", "process", "shift"]),
+        ]
+
+    def __str__(self):
+        return f"Snapshot {self.id} @ {self.captured_at}"
+
+
+class ProductionMachineStatus(BaseModel):
+    class MachineState(models.TextChoices):
+        RUNNING = "running", "Running"
+        STOPPED = "stopped", "Stopped"
+        IDLE = "idle", "Idle"
+        ERROR = "error", "Error"
+
+    snapshot = models.ForeignKey(
+        ProductionSnapshot,
+        on_delete=models.CASCADE,
+        related_name="machine_statuses",
+    )
+    machine_code = models.CharField(max_length=80)
+    equipment_name = models.CharField(max_length=120)
+    status = models.CharField(max_length=20, choices=MachineState.choices, default=MachineState.IDLE)
+    production_actual = models.IntegerField(default=0)
+    production_target = models.IntegerField(default=0)
+    kadouritsu = models.DecimalField(max_digits=6, decimal_places=2, blank=True, null=True)
+    run_minutes = models.PositiveIntegerField(default=0)
+    stop_minutes = models.PositiveIntegerField(default=0)
+    last_update_at = models.DateTimeField(blank=True, null=True)
+    alarm_active = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["machine_code", "id"]
+        indexes = [
+            models.Index(fields=["snapshot", "status"]),
+            models.Index(fields=["machine_code"]),
+        ]
+
+    def __str__(self):
+        return f"{self.machine_code} ({self.status})"
+
+
+class ProductionMetrics(BaseModel):
+    snapshot = models.OneToOneField(
+        ProductionSnapshot,
+        on_delete=models.CASCADE,
+        related_name="metrics",
+    )
+    total_actual = models.IntegerField(default=0)
+    total_target = models.IntegerField(default=0)
+    average_kadouritsu = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    running_count = models.PositiveIntegerField(default=0)
+    stopped_count = models.PositiveIntegerField(default=0)
+    idle_count = models.PositiveIntegerField(default=0)
+    error_count = models.PositiveIntegerField(default=0)
+    alarms_active = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["-snapshot__captured_at", "-id"]
+
+    def __str__(self):
+        return f"Metrics snapshot {self.snapshot_id}"
+
+
+class OperationsSettings(BaseModel):
+    singleton_key = models.CharField(max_length=20, default="default", unique=True)
+    weekly_warning_hours = models.DecimalField(max_digits=6, decimal_places=2, default=50)
+    weekly_critical_hours = models.DecimalField(max_digits=6, decimal_places=2, default=60)
+    monthly_overtime_warning_hours = models.DecimalField(max_digits=6, decimal_places=2, default=45)
+    monthly_overtime_critical_hours = models.DecimalField(max_digits=6, decimal_places=2, default=60)
+    consecutive_absence_warning = models.PositiveSmallIntegerField(default=2)
+    recurrent_late_warning = models.PositiveSmallIntegerField(default=3)
+    enable_kajuuroudou_alerts = models.BooleanField(default=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["id"]
+        verbose_name = "Operations settings"
+        verbose_name_plural = "Operations settings"
+
+    def __str__(self):
+        return "Operations settings"
+
+    @classmethod
+    def load(cls):
+        obj, _ = cls.objects.get_or_create(singleton_key="default")
+        return obj
+
+
+class EmployeeAdministrativeNote(BaseModel):
+    class Category(models.TextChoices):
+        ASSIDUIDADE = "assiduidade", "Assiduidade"
+        ATRASO = "atraso", "Atraso"
+        FALTA = "falta", "Falta"
+        HORAS_EXTRAS = "horas_extras", "Horas extras"
+        KAJUUROUDOU = "kajuuroudou", "Kajuuroudou"
+        ORIENTACAO = "orientacao", "Orientação"
+        OUTROS = "outros", "Outros"
+
+    class Severity(models.TextChoices):
+        INFO = "info", "Info"
+        WARNING = "warning", "Warning"
+        CRITICAL = "critical", "Critical"
+
+    employee = models.ForeignKey(
+        "master.Employee",
+        on_delete=models.CASCADE,
+        related_name="administrative_notes",
+    )
+    date = models.DateField()
+    category = models.CharField(max_length=30, choices=Category.choices, default=Category.OUTROS)
+    severity = models.CharField(max_length=20, choices=Severity.choices, default=Severity.INFO)
+    note = models.TextField()
+    related_period_start = models.DateField(blank=True, null=True)
+    related_period_end = models.DateField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["-date", "-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["employee", "date"]),
+            models.Index(fields=["category", "severity"]),
+        ]
+
+    def __str__(self):
+        return f"{self.employee_id} - {self.category} - {self.date}"
