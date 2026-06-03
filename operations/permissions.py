@@ -135,6 +135,7 @@ class AttendanceDashboardPermission(BasePermission):
         "viewer",
         "dashboard_tv",
     }
+    IMPORT_ALLOWED = {"director", "vice_director", "hr", "senior_manager", "manager", "supervisor"}
 
     def has_permission(self, request, view):
         user = request.user
@@ -148,7 +149,7 @@ class AttendanceDashboardPermission(BasePermission):
             return False
 
         if request.method not in SAFE_METHODS:
-            return False
+            return getattr(view, "action", None) == "import_timecard" and role_code in self.IMPORT_ALLOWED
 
         # Dashboard TV cannot open sensitive individual details.
         if role_code == "dashboard_tv" and getattr(view, "action", None) in {"employee_detail", "employee-detail"}:

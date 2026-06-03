@@ -283,6 +283,8 @@ Impacto prático:
   - `python manage.py import_timecard_csv --file <arquivo.csv> --encoding cp932 --month YYYY-MM`
 
 - Cartão ponto:
+  - UI: `/operations/attendance-dashboard` > `Cartão ponto x Escala` > `Importar cartão ponto`
+  - API: `POST /api/operations/attendance-dashboard/import-timecard/`
   - importar arquivos `CSV`/`TXT` em `cp932`, `shift_jis` ou `utf-8`
   - normalização automática de `社員CD` removendo sufixo `A/B/C`
   - dashboard exibe `timecard_summary` e `timecard_divergences`
@@ -306,25 +308,33 @@ Impacto prático:
 
 ## Anexo C - Validação de cartão ponto
 
-1. Importar arquivo de ponto:
+1. Importar arquivo de ponto pela tela:
+- abrir `/operations/attendance-dashboard`
+- ir em `Cartão ponto x Escala`
+- clicar `Importar cartão ponto`
+- selecionar o arquivo `.csv`/`.txt`
+- confirmar encoding `CP932 / Shift_JIS` e mês
+- clicar `Importar arquivo`
+
+2. Importar pelo terminal, se necessário:
 ```bash
 cd /caminho/backend
 python manage.py import_timecard_csv --file /caminho/arquivo.csv --encoding cp932 --month 2026-05
 ```
-2. Abrir o dashboard:
+3. Abrir o dashboard pela API:
 ```bash
 curl -i https://<dominio>/api/operations/attendance-dashboard/?month=2026-05
 ```
-3. Conferir no payload:
+4. Conferir no payload:
    - `timecard_summary.total_records`
    - `timecard_summary.divergences_count`
    - `timecard_divergences`
-4. Na UI:
+5. Na UI:
    - abrir `/operations/attendance-dashboard`
    - conferir o KPI `Divergências cartão ponto`
    - abrir `Cartão ponto x Escala`
    - filtrar por tipo de divergência
    - clicar em uma linha e abrir o drawer do funcionário
-5. No drawer:
+6. No drawer:
    - validar a seção `Cartão ponto`
    - conferir entrada, saída, HE, atraso e saída antecipada

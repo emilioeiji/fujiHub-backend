@@ -205,11 +205,8 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
         with transaction.atomic():
             result = commit_employee_import(parsed_rows)
-            if result.get("errors"):
-                transaction.set_rollback(True)
 
-        status_code = 200 if result.get("committed") else 400
-        return Response(result, status=status_code)
+        return Response(result, status=200)
 
 
 class EmployeeHousingViewSet(viewsets.ModelViewSet):

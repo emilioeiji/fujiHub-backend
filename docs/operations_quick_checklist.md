@@ -63,7 +63,15 @@ curl -i https://<dominio>/api/operations/hikitsugui-reports/
 curl -i https://<dominio>/api/operations/attendance-dashboard/
 ```
 
-Cartão ponto:
+Cartão ponto pela tela:
+- [ ] Abrir `/operations/attendance-dashboard`
+- [ ] Ir ao painel `Cartão ponto x Escala`
+- [ ] Clicar em `Importar cartão ponto`
+- [ ] Selecionar arquivo `.csv` ou `.txt`
+- [ ] Confirmar `CP932 / Shift_JIS` e o mês
+- [ ] Clicar em `Importar arquivo`
+
+Cartão ponto pelo terminal, se necessário:
 ```bash
 cd /caminho/backend
 python manage.py import_timecard_csv --file /caminho/arquivo.csv --encoding cp932 --month 2026-05

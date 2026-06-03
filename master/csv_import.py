@@ -384,15 +384,19 @@ def preview_employee_import(parsed_rows):
 
 def commit_employee_import(parsed_rows):
     preview = preview_employee_import(parsed_rows)
-    if preview["errors"]:
-        return {**preview, "committed": False, "created_ids": [], "updated_ids": []}
+    error_rows = {item["row"] for item in preview["errors"]}
 
     employee_ids = [row.employee_id for row in parsed_rows if row.employee_id]
     existing = Employee.objects.in_bulk(employee_ids, field_name="employee_id")
     created_ids = []
     updated_ids = []
+    skipped_rows = []
 
     for row in parsed_rows:
+        if row.row_number in error_rows:
+            skipped_rows.append(row.row_number)
+            continue
+
         current = existing.get(row.employee_id)
         payload = dict(row.payload)
 
@@ -422,4 +426,6 @@ def commit_employee_import(parsed_rows):
         "committed": True,
         "created_ids": created_ids,
         "updated_ids": updated_ids,
+        "skipped_rows": skipped_rows,
+        "skipped_count": len(skipped_rows),
     }

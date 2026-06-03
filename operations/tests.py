@@ -4,6 +4,7 @@ from io import BytesIO
 from tempfile import NamedTemporaryFile
 
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError
@@ -2203,6 +2204,23 @@ class OperationsCalendarAPITests(TestCase):
         self.assertIn("early_leave", divergence_types)
         self.assertIn("worked_on_day_off", divergence_types)
         self.assertIn("timecard_without_calendar_cell", divergence_types)
+
+    def test_attendance_dashboard_import_timecard_upload(self):
+        csv_content = (
+            "社員CD,社員氏名,年月日,勤務種類CD,勤務種類名,就業時間帯CD,就業時間帯名,出勤1時刻,退勤1時刻,総労働時間,就業時間,残業,遅刻時間1,早退時間1,備考\n"
+            f"{self.employee.employee_id},山田 太郎,2026/05/10,WK,出勤,DAY,日勤,08:00,17:00,9:00,8:00,1:00,0:10,0:05,アップロード\n"
+        ).encode("cp932")
+        upload = SimpleUploadedFile("timecard.csv", csv_content, content_type="text/csv")
+
+        response = self.client.post(
+            "/api/operations/attendance-dashboard/import-timecard/",
+            {"file": upload, "encoding": "cp932", "month": "2026-05"},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["rows_count"], 1)
+        self.assertEqual(AttendanceTimecardRecord.objects.count(), 1)
 
     def test_employee_admin_notes_create_list_and_dashboard_detail(self):
         calendar = self._create_calendar(year=2026, month=5, title="Notes detail test")

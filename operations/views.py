@@ -1,4 +1,6 @@
 import csv
+import os
+from tempfile import NamedTemporaryFile
 from calendar import monthrange
 from datetime import datetime, timedelta
 from io import StringIO
@@ -14,6 +16,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -93,6 +96,7 @@ from .services import (
     generate_calendar_schedule,
     get_assignment_sort_key,
     import_calendar_employees,
+    import_timecard_csv,
     preview_calendar_employee_candidates,
     parse_calendar_cell_value,
     recalculate_calendar_totals,
@@ -504,6 +508,7 @@ class EmployeeAdministrativeNoteViewSet(ActorMixin, viewsets.ModelViewSet):
 
 class AttendanceDashboardViewSet(viewsets.ViewSet):
     permission_classes = [AttendanceDashboardPermission]
+    parser_classes = [MultiPartParser, FormParser]
 
     def _safe_load_settings(self):
         try:
@@ -639,6 +644,42 @@ class AttendanceDashboardViewSet(viewsets.ViewSet):
             "actual": item.get("actual"),
             "message": item.get("message"),
         }
+
+    @action(detail=False, methods=["post"], url_path="import-timecard")
+    def import_timecard(self, request):
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response({"detail": "Arquivo CSV/TXT é obrigatório."}, status=status.HTTP_400_BAD_REQUEST)
+
+        encoding = request.data.get("encoding") or "cp932"
+        delimiter = request.data.get("delimiter") or "auto"
+        month = request.data.get("month") or None
+        dry_run = str(request.data.get("dry_run", "false")).lower() in {"1", "true", "yes", "sim"}
+
+        suffix = os.path.splitext(upload.name or "")[1] or ".csv"
+        temp_path = None
+        try:
+            with NamedTemporaryFile("wb", suffix=suffix, delete=False) as temp_file:
+                temp_path = temp_file.name
+                for chunk in upload.chunks():
+                    temp_file.write(chunk)
+
+            result = import_timecard_csv(
+                file_path=temp_path,
+                encoding=encoding,
+                delimiter=delimiter,
+                month=month,
+                dry_run=dry_run,
+                source_file=upload.name,
+                user=request.user,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+        return Response(result, status=status.HTTP_200_OK)
 
     def _filtered_cells_queryset(self, request, *, apply_scope=True):
         params = request.query_params

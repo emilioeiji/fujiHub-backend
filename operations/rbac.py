@@ -257,6 +257,7 @@ def get_user_operation_permissions_payload(user):
     can_create_admin_notes = is_superuser or role_code in {"director", "vice_director", "hr", "manager"}
     can_edit_operations_settings = user_can_edit_operations_settings(user)
     can_export_attendance = can_view_employee_detail
+    can_import_timecard = is_superuser or role_code in {"director", "vice_director", "hr", "senior_manager", "manager", "supervisor"}
     can_view_dashboard_tv = is_superuser or role_code == "dashboard_tv"
 
     # For scoped roles, keep flags conservative when there is no scope.
@@ -270,6 +271,7 @@ def get_user_operation_permissions_payload(user):
         can_edit_hikitsugui = False
         can_view_attendance_dashboard = role_code == "dashboard_tv"
         can_view_employee_detail = False
+        can_import_timecard = False
 
     can_view_rbac = is_superuser or role_code in {"director", "vice_director", "hr", "manager", "supervisor"}
     can_edit_rbac = is_superuser or role_code in {"director", "vice_director", "hr"}
@@ -301,6 +303,7 @@ def get_user_operation_permissions_payload(user):
             "can_create_admin_notes": bool(can_create_admin_notes),
             "can_edit_operations_settings": bool(can_edit_operations_settings),
             "can_export_attendance": bool(can_export_attendance),
+            "can_import_timecard": bool(can_import_timecard),
             "can_view_dashboard_tv": bool(can_view_dashboard_tv),
             "can_view_rbac": bool(can_view_rbac),
             "can_edit_rbac": bool(can_edit_rbac),

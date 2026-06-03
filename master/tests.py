@@ -452,6 +452,21 @@ class EmployeeCsvImportTests(TestCase):
         self.assertTrue(response.data["committed"])
         self.assertTrue(Employee.objects.filter(employee_id="7001402").exists())
 
+    def test_import_commit_skips_error_rows_and_imports_valid_rows(self):
+        csv_file = self._csv_file(
+            [
+                "社員番号,和名,アルファベット名",
+                ",ID ausente,Missing Id",
+                "7001403,有効行,Valid Row",
+            ]
+        )
+        response = self.client.post("/api/employees/import-commit/", {"file": csv_file}, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["committed"])
+        self.assertEqual(len(response.data["errors"]), 1)
+        self.assertEqual(response.data["skipped_count"], 1)
+        self.assertTrue(Employee.objects.filter(employee_id="7001403").exists())
+
     def test_import_commit_updates_existing_employee(self):
         Employee.objects.create(employee_id="7001321", name_jp="旧名", name_en="Old Name", nickname="nick")
         csv_file = self._csv_file(
