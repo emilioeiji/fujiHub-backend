@@ -1,3 +1,4 @@
+import os
 from datetime import date, datetime, time
 from io import BytesIO
 from tempfile import NamedTemporaryFile
@@ -17,6 +18,7 @@ from master.models import BuildingFloor, Department, Employee, Process, Shift
 
 from .models import (
     AttendanceStatus,
+    AttendanceTimecardRecord,
     CalendarDayCell,
     CalendarEmployeeAssignment,
     CalendarPrintPreset,
@@ -43,7 +45,7 @@ from .models import (
     WorkTimeCode,
     HikitsuguiOccurrenceCategory,
 )
-from .services import parse_production_file
+from .services import compare_timecard_to_calendar, import_timecard_csv, parse_production_file, parse_timecard_csv
 from .rbac import (
     get_user_operation_profile,
     user_can_access_scope,
@@ -2133,10 +2135,74 @@ class OperationsCalendarAPITests(TestCase):
             actual_work_minutes=540,
             memo="Observacao teste",
         )
+        with NamedTemporaryFile("w", suffix=".csv", encoding="cp932", newline="", delete=False) as fp:
+            fp.write(
+                "社員CD,社員氏名,年月日,勤務種類CD,勤務種類名,就業時間帯CD,就業時間帯名,出勤1時刻,退勤1時刻,総労働時間,就業時間,残業,遅刻時間1,早退時間1,備考\n"
+                f"{self.employee.employee_id},山田 太郎,2026/05/10,WK,出勤,DAY,日勤,08:00,17:00,9:00,8:00,1:00,0:10,0:05,テスト\n"
+            )
+            fp.flush()
+            file_path = fp.name
+        self.addCleanup(lambda path=file_path: os.path.exists(path) and os.unlink(path))
+        import_timecard_csv(file_path=file_path, encoding="cp932")
         response = self.client.get(f"/api/operations/attendance-dashboard/employees/{self.employee.employee_id}/?month=2026-05")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["employee"]["employee_id"], self.employee.employee_id)
         self.assertGreaterEqual(len(response.data["daily_history"]), 1)
+        self.assertIn("timecard_records", response.data)
+        self.assertGreaterEqual(len(response.data["timecard_records"]), 1)
+
+    def test_attendance_dashboard_timecard_summary_and_divergences(self):
+        calendar = self._create_calendar(year=2026, month=5, title="Timecard dashboard test")
+        assignment = self._create_assignment(calendar["id"])
+        work_status = AttendanceStatus.objects.get(code="work")
+        off_status = AttendanceStatus.objects.get(code="off")
+
+        CalendarDayCell.objects.create(
+            calendar_id=calendar["id"],
+            assignment_id=assignment["id"],
+            date="2026-05-10",
+            attendance_status=work_status,
+            scheduled_regular_minutes=480,
+            scheduled_overtime_minutes=60,
+            actual_work_minutes=540,
+            overtime_minutes=60,
+        )
+        CalendarDayCell.objects.create(
+            calendar_id=calendar["id"],
+            assignment_id=assignment["id"],
+            date="2026-05-11",
+            attendance_status=off_status,
+            scheduled_regular_minutes=0,
+            scheduled_overtime_minutes=0,
+            actual_work_minutes=0,
+            overtime_minutes=0,
+        )
+
+        with NamedTemporaryFile("w", suffix=".csv", encoding="cp932", newline="", delete=False) as fp:
+            fp.write(
+                "社員CD,社員氏名,年月日,勤務種類CD,勤務種類名,就業時間帯CD,就業時間帯名,出勤1時刻,退勤1時刻,総労働時間,就業時間,残業,遅刻時間1,早退時間1,備考\n"
+                f"{self.employee.employee_id},山田 太郎,2026/05/10,WK,出勤,DAY,日勤,08:00,17:00,9:00,8:00,1:00,0:10,0:05,テスト\n"
+                f"{self.employee.employee_id},山田 太郎,2026/05/11,WK,出勤,DAY,日勤,08:00,12:00,4:00,4:00,0:00,0:00,0:00,休日出勤\n"
+                f"{self.employee.employee_id},山田 太郎,2026/05/12,WK,出勤,DAY,日勤,08:00,12:00,4:00,4:00,0:00,0:00,0:00,未連携\n"
+            )
+            fp.flush()
+            file_path = fp.name
+        self.addCleanup(lambda path=file_path: os.path.exists(path) and os.unlink(path))
+        import_timecard_csv(file_path=file_path, encoding="cp932")
+
+        response = self.client.get("/api/operations/attendance-dashboard/?month=2026-05")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("timecard_summary", response.data)
+        self.assertIn("timecard_divergences", response.data)
+        self.assertEqual(response.data["timecard_summary"]["total_records"], 3)
+        self.assertEqual(response.data["timecard_summary"]["matched_records"], 2)
+        self.assertEqual(response.data["timecard_summary"]["unmatched_records"], 1)
+        self.assertGreaterEqual(response.data["timecard_summary"]["divergences_count"], 4)
+        divergence_types = {item["type"] for item in response.data["timecard_divergences"]}
+        self.assertIn("late", divergence_types)
+        self.assertIn("early_leave", divergence_types)
+        self.assertIn("worked_on_day_off", divergence_types)
+        self.assertIn("timecard_without_calendar_cell", divergence_types)
 
     def test_employee_admin_notes_create_list_and_dashboard_detail(self):
         calendar = self._create_calendar(year=2026, month=5, title="Notes detail test")
@@ -2246,6 +2312,136 @@ class OperationsCalendarAPITests(TestCase):
         self.assertTrue(hasattr(snapshot, "metrics"))
         self.assertEqual(snapshot.metrics.error_count, 1)
         self.assertEqual(snapshot.metrics.running_count, 1)
+
+
+class OperationsTimecardImportTests(TestCase):
+    def setUp(self):
+        self.department = Department.objects.create(code="D-TC", label_pt="Dept TC", label_jp="部署TC")
+        self.process = Process.objects.create(code="P-TC", label_pt="Proc TC", label_jp="工程TC")
+        self.shift = Shift.objects.create(code="S-TC", label_pt="Dia", label_jp="日勤")
+        self.employee = Employee.objects.create(
+            employee_id="2101148",
+            employee_cd="2101148A",
+            name_jp="山田 太郎",
+            name_en="Yamada Taro",
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+        )
+        self.calendar = MonthlyOperationCalendar.objects.create(
+            department=self.department,
+            process=self.process,
+            shift=self.shift,
+            year=2026,
+            month=5,
+            title="Timecard Calendar",
+        )
+        self.assignment = CalendarEmployeeAssignment.objects.create(
+            calendar=self.calendar,
+            employee=self.employee,
+            start_date=date(2026, 5, 1),
+            display_order=1,
+            rotation_group="A",
+            shift_type=CalendarEmployeeAssignment.ShiftType.DAY,
+        )
+        self.work_status = AttendanceStatus.objects.get(code="work")
+        self.off_status = AttendanceStatus.objects.get(code="off")
+
+    def _write_timecard_csv(self, rows):
+        with NamedTemporaryFile("w", suffix=".csv", encoding="cp932", newline="", delete=False) as fp:
+            fp.write(
+                "社員CD,社員氏名,年月日,勤務種類CD,勤務種類名,就業時間帯CD,就業時間帯名,出勤1時刻,退勤1時刻,総労働時間,就業時間,残業,遅刻時間1,早退時間1,備考\n"
+            )
+            for row in rows:
+                fp.write(row + "\n")
+            fp.flush()
+            file_path = fp.name
+        self.addCleanup(lambda path=file_path: os.path.exists(path) and os.unlink(path))
+        return file_path
+
+    def test_parse_timecard_csv_cp932_and_normalizes_employee_code(self):
+        file_path = self._write_timecard_csv(
+            [
+                "2101148A,山田 太郎,2026/05/27,WK,出勤,DAY,日勤,08:00,17:00,8:30,8:00,0:30,0:15,0:05,備考テスト",
+            ]
+        )
+        parsed = parse_timecard_csv(file_path, encoding="cp932")
+        self.assertEqual(len(parsed["rows"]), 1)
+        row = parsed["rows"][0]
+        self.assertEqual(row["employee_code_raw"], "2101148A")
+        self.assertEqual(row["employee_code_normalized"], "2101148")
+        self.assertEqual(row["work_date"], date(2026, 5, 27))
+        self.assertEqual(row["total_work_minutes"], 510)
+        self.assertEqual(row["scheduled_work_minutes"], 480)
+        self.assertEqual(row["overtime_minutes"], 30)
+        self.assertEqual(row["late_minutes"], 15)
+        self.assertEqual(row["early_leave_minutes"], 5)
+
+    def test_import_timecard_csv_dry_run_does_not_persist(self):
+        file_path = self._write_timecard_csv(
+            [
+                "2101148A,山田 太郎,2026/05/27,WK,出勤,DAY,日勤,08:00,17:00,8:30,8:00,0:30,0:15,0:05,備考テスト",
+            ]
+        )
+        existing_count = AttendanceTimecardRecord.objects.count()
+        result = import_timecard_csv(file_path=file_path, encoding="cp932", dry_run=True)
+        self.assertEqual(result["rows_count"], 1)
+        self.assertEqual(AttendanceTimecardRecord.objects.count(), existing_count)
+
+    def test_import_timecard_csv_command_updates_without_duplicates(self):
+        file_path = self._write_timecard_csv(
+            [
+                "2101148A,山田 太郎,2026/05/27,WK,出勤,DAY,日勤,08:00,17:00,8:30,8:00,0:30,0:15,0:05,備考テスト",
+            ]
+        )
+        call_command("import_timecard_csv", "--file", file_path, "--encoding", "cp932", "--month", "2026-05")
+        self.assertEqual(AttendanceTimecardRecord.objects.count(), 1)
+
+        updated_file = self._write_timecard_csv(
+            [
+                "2101148A,山田 太郎,2026/05/27,WK,出勤,DAY,日勤,08:00,17:00,8:30,8:00,0:40,0:15,0:05,備考更新",
+            ]
+        )
+        call_command("import_timecard_csv", "--file", updated_file, "--encoding", "cp932", "--month", "2026-05")
+        self.assertEqual(AttendanceTimecardRecord.objects.count(), 1)
+        record = AttendanceTimecardRecord.objects.get(employee_code_normalized="2101148", work_date=date(2026, 5, 27))
+        self.assertEqual(record.overtime_minutes, 40)
+        self.assertEqual(record.memo, "備考更新")
+
+    def test_compare_timecard_to_calendar_detects_divergences(self):
+        CalendarDayCell.objects.create(
+            calendar=self.calendar,
+            assignment=self.assignment,
+            date=date(2026, 5, 27),
+            attendance_status=self.work_status,
+            scheduled_regular_minutes=480,
+            scheduled_overtime_minutes=60,
+        )
+        CalendarDayCell.objects.create(
+            calendar=self.calendar,
+            assignment=self.assignment,
+            date=date(2026, 5, 28),
+            attendance_status=self.off_status,
+            scheduled_regular_minutes=0,
+            scheduled_overtime_minutes=0,
+        )
+
+        import_timecard_csv(
+            file_path=self._write_timecard_csv(
+                [
+                    "2101148A,山田 太郎,2026/05/27,WK,出勤,DAY,日勤,08:00,17:00,9:00,8:00,0:30,0:15,0:05,備考テスト",
+                    "2101148A,山田 太郎,2026/05/28,WK,出勤,DAY,日勤,08:00,12:00,4:00,4:00,0:00,0:00,0:00,出勤日違い",
+                    "2101148A,山田 太郎,2026/05/29,WK,出勤,DAY,日勤,08:00,12:00,4:00,4:00,0:00,0:00,0:00,未連携",
+                ]
+            ),
+            encoding="cp932",
+        )
+
+        divergences = compare_timecard_to_calendar(self.calendar)
+        types = {item["type"] for item in divergences}
+        self.assertIn("late", types)
+        self.assertIn("worked_on_day_off", types)
+        self.assertIn("timecard_without_calendar_cell", types)
 
 
 class OperationsRBACBaseTests(TestCase):

@@ -6,7 +6,7 @@ from io import StringIO
 from django.contrib.auth import get_user_model
 from django.http import HttpResponse
 from django.db import transaction
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, Max, Min, Q, Sum
 from django.db.utils import OperationalError, ProgrammingError
 from django.shortcuts import get_object_or_404
 from openpyxl import Workbook
@@ -39,6 +39,7 @@ from .models import (
     ProductionMetrics,
     OperationsSettings,
     EmployeeAdministrativeNote,
+    AttendanceTimecardRecord,
     RotationGroupStyle,
     WorkTimeCode,
     OperationRole,
@@ -88,6 +89,7 @@ from .serializers import (
 from .services import (
     build_calendar_cell_parser_context,
     calculate_cell_work_minutes,
+    compare_timecard_to_calendar,
     generate_calendar_schedule,
     get_assignment_sort_key,
     import_calendar_employees,
@@ -95,6 +97,7 @@ from .services import (
     parse_calendar_cell_value,
     recalculate_calendar_totals,
     sync_calendar_assignments_from_master,
+    _normalize_employee_code,
 )
 from master.models import Department, Process, Shift
 
@@ -517,6 +520,126 @@ class AttendanceDashboardViewSet(viewsets.ViewSet):
                 notes="",
             )
 
+    def _employee_display_name(self, employee):
+        return (
+            getattr(employee, "name_en", None)
+            or getattr(employee, "internal_name", None)
+            or getattr(employee, "name_jp", None)
+            or ""
+        )
+
+    def _timecard_scope(self, request, queryset):
+        relevant_codes = set()
+        cell_map = {}
+        for cell in queryset.select_related("assignment__employee"):
+            employee = getattr(cell.assignment, "employee", None)
+            if not employee:
+                continue
+            normalized_code = _normalize_employee_code(getattr(employee, "employee_cd", "") or getattr(employee, "employee_id", ""))
+            if not normalized_code:
+                continue
+            relevant_codes.add(normalized_code)
+            cell_map[(normalized_code, cell.date)] = cell
+
+        if not relevant_codes:
+            return {
+                "records": [],
+                "record_map": {},
+                "cell_map": cell_map,
+                "relevant_codes": relevant_codes,
+                "divergences": [],
+                "summary": {
+                    "total_records": 0,
+                    "matched_records": 0,
+                    "unmatched_records": 0,
+                    "divergences_count": 0,
+                    "missing_punch_count": 0,
+                    "worked_on_day_off_count": 0,
+                    "late_count": 0,
+                    "early_leave_count": 0,
+                    "overtime_mismatch_count": 0,
+                    "work_minutes_mismatch_count": 0,
+                },
+            }
+
+        records_qs = AttendanceTimecardRecord.objects.filter(employee_code_normalized__in=relevant_codes)
+        month = request.query_params.get("month")
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+        if date_from:
+            records_qs = records_qs.filter(work_date__gte=date_from)
+        if date_to:
+            records_qs = records_qs.filter(work_date__lte=date_to)
+        if not date_from and not date_to and month:
+            try:
+                year_str, month_str = month.split("-")
+                month_year = int(year_str)
+                month_num = int(month_str)
+                records_qs = records_qs.filter(work_date__year=month_year, work_date__month=month_num)
+            except (TypeError, ValueError):
+                pass
+        elif not date_from and not date_to:
+            bounds = queryset.aggregate(min_date=Min("date"), max_date=Max("date"))
+            if bounds.get("min_date"):
+                records_qs = records_qs.filter(work_date__gte=bounds["min_date"], work_date__lte=bounds["max_date"])
+
+        records = list(records_qs.order_by("work_date", "employee_code_normalized"))
+        record_map = {(record.employee_code_normalized, record.work_date): record for record in records}
+
+        divergences = []
+        calendar_ids = list(queryset.values_list("calendar_id", flat=True).distinct())
+        calendars = MonthlyOperationCalendar.objects.filter(id__in=calendar_ids)
+        for calendar in calendars:
+            divergences.extend(compare_timecard_to_calendar(calendar, records=records))
+
+        matched_records = sum(1 for record in records if (record.employee_code_normalized, record.work_date) in cell_map)
+        summary = {
+            "total_records": len(records),
+            "matched_records": matched_records,
+            "unmatched_records": max(len(records) - matched_records, 0),
+            "divergences_count": len(divergences),
+            "missing_punch_count": sum(1 for item in divergences if item.get("type") == "missing_timecard"),
+            "worked_on_day_off_count": sum(1 for item in divergences if item.get("type") == "worked_on_day_off"),
+            "late_count": sum(1 for item in divergences if item.get("type") == "late"),
+            "early_leave_count": sum(1 for item in divergences if item.get("type") == "early_leave"),
+            "overtime_mismatch_count": sum(1 for item in divergences if item.get("type") == "overtime_mismatch"),
+            "work_minutes_mismatch_count": sum(1 for item in divergences if item.get("type") == "work_minutes_mismatch"),
+        }
+        return {
+            "records": records,
+            "record_map": record_map,
+            "cell_map": cell_map,
+            "relevant_codes": relevant_codes,
+            "divergences": divergences,
+            "summary": summary,
+        }
+
+    def _serialize_timecard_divergence(self, item, cell_map=None, record_map=None):
+        cell_map = cell_map or {}
+        record_map = record_map or {}
+        employee_code = _normalize_employee_code(item.get("employee_code"))
+        record = record_map.get((employee_code, item.get("date")))
+        cell = cell_map.get((employee_code, item.get("date")))
+        employee = getattr(getattr(cell, "assignment", None), "employee", None)
+        employee_id = getattr(employee, "employee_id", None) if employee else None
+        employee_name = (
+            item.get("employee_name")
+            or (self._employee_display_name(employee) if employee else "")
+            or getattr(record, "employee_name", "")
+            or ""
+        )
+        return {
+            "employee_id": employee_id,
+            "employee_code": employee_code,
+            "employee_name": employee_name,
+            "date": item.get("date"),
+            "type": item.get("type"),
+            "severity": item.get("severity") or "warning",
+            "expected": item.get("expected"),
+            "actual": item.get("actual"),
+            "message": item.get("message"),
+        }
+
     def _filtered_cells_queryset(self, request, *, apply_scope=True):
         params = request.query_params
         month = params.get("month")
@@ -686,6 +809,16 @@ class AttendanceDashboardViewSet(viewsets.ViewSet):
                         }
                     )
 
+        timecard_payload = self._timecard_scope(request, queryset)
+        timecard_divergences = [
+            self._serialize_timecard_divergence(
+                item,
+                cell_map=timecard_payload["cell_map"],
+                record_map=timecard_payload["record_map"],
+            )
+            for item in timecard_payload["divergences"]
+        ]
+
         return Response(
             {
                 "kpis": {
@@ -704,6 +837,8 @@ class AttendanceDashboardViewSet(viewsets.ViewSet):
                     "total_records": total_records,
                     "without_status": no_status_count,
                 },
+                "timecard_summary": timecard_payload["summary"],
+                "timecard_divergences": timecard_divergences[:100],
                 "overtime_summary": {
                     "by_employee": [
                         {
@@ -818,6 +953,32 @@ class AttendanceDashboardViewSet(AttendanceDashboardViewSet):
         weekly_minutes = sum(item["actual_work_minutes"] or 0 for item in daily_rows)
         monthly_ot_minutes = sum(item["overtime_minutes"] or 0 for item in daily_rows)
 
+        timecard_payload = self._timecard_scope(request, queryset)
+        timecard_divergence_map = {
+            (item["employee_code"], item["date"]): item for item in timecard_payload["divergences"]
+        }
+        timecard_records = []
+        for record in timecard_payload["records"]:
+            divergence = timecard_divergence_map.get((record.employee_code_normalized, record.work_date))
+            timecard_records.append(
+                {
+                    "date": record.work_date,
+                    "clock_in": record.clock_in.strftime("%H:%M") if record.clock_in else "",
+                    "clock_out": record.clock_out.strftime("%H:%M") if record.clock_out else "",
+                    "total_work_hours": round((record.total_work_minutes or 0) / 60.0, 2),
+                    "scheduled_work_hours": round((record.scheduled_work_minutes or 0) / 60.0, 2),
+                    "overtime_hours": round((record.overtime_minutes or 0) / 60.0, 2),
+                    "late_minutes": int(record.late_minutes or 0),
+                    "early_leave_minutes": int(record.early_leave_minutes or 0),
+                    "memo": record.memo or record.work_type_name or record.shift_name or "",
+                    "divergence_type": divergence["type"] if divergence else None,
+                    "divergence_severity": divergence["severity"] if divergence else None,
+                    "divergence_message": divergence["message"] if divergence else None,
+                    "divergence_expected": divergence["expected"] if divergence else None,
+                    "divergence_actual": divergence["actual"] if divergence else None,
+                }
+            )
+
         risk_alerts = []
         weekly_warning = float(settings_obj.weekly_warning_hours or 50)
         weekly_critical = float(settings_obj.weekly_critical_hours or 60)
@@ -848,6 +1009,7 @@ class AttendanceDashboardViewSet(AttendanceDashboardViewSet):
                     "weekly_worked_hours": round(weekly_hours, 2),
                 },
                 "risk_alerts": risk_alerts,
+                "timecard_records": timecard_records,
                 "administrative_notes": EmployeeAdministrativeNoteSerializer(
                     EmployeeAdministrativeNote.objects.filter(employee=employee).select_related("created_by")[:20],
                     many=True,

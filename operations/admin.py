@@ -15,6 +15,7 @@ from .models import (
     HikitsuguiItem,
     RotationGroupStyle,
     WorkTimeCode,
+    AttendanceTimecardRecord,
     OperationRole,
     UserOperationProfile,
     UserOperationScope,
@@ -242,3 +243,10 @@ class OperationAccessAuditLogAdmin(admin.ModelAdmin):
     list_display = ("target_user", "action", "created_by", "created_at")
     list_filter = ("action", "created_at")
     search_fields = ("target_user__username", "created_by__username")
+
+
+@admin.register(AttendanceTimecardRecord)
+class AttendanceTimecardRecordAdmin(admin.ModelAdmin):
+    list_display = ("employee_code_normalized", "employee_name", "work_date", "total_work_minutes", "overtime_minutes", "source_file")
+    list_filter = ("work_date", "source_file")
+    search_fields = ("employee_code_raw", "employee_code_normalized", "employee_name", "memo")

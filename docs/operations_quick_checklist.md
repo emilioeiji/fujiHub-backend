@@ -54,6 +54,7 @@ sudo systemctl restart apache2
 - [ ] Abrir Hikitsugui (`/operations/hikitsugui`)
 - [ ] Abrir Dashboard de Presença (`/operations/attendance-dashboard`)
 - [ ] Testar export/impressão básico (1 ação de cada)
+- [ ] Se houver arquivo de cartão ponto, importar e validar divergências
 
 API rápida:
 ```bash
@@ -61,6 +62,20 @@ curl -i https://<dominio>/api/operations/calendars/
 curl -i https://<dominio>/api/operations/hikitsugui-reports/
 curl -i https://<dominio>/api/operations/attendance-dashboard/
 ```
+
+Cartão ponto:
+```bash
+cd /caminho/backend
+python manage.py import_timecard_csv --file /caminho/arquivo.csv --encoding cp932 --month 2026-05
+```
+
+Validação rápida do cartão ponto:
+- [ ] Abrir `/operations/attendance-dashboard`
+- [ ] Conferir KPI `Divergências cartão ponto`
+- [ ] Abrir painel `Cartão ponto x Escala`
+- [ ] Filtrar por `Sem ponto`, `Atraso` e `Trabalhou na folga`
+- [ ] Clicar em uma divergência e abrir o drawer do funcionário
+- [ ] Conferir a seção `Cartão ponto` no drawer
 
 ---
 

@@ -280,6 +280,13 @@ Impacto prático:
   - `GET /api/operations/attendance-dashboard/employees/{employee_id}/`
   - `GET/PATCH /api/operations/settings/current/`
   - `GET/POST/PATCH /api/operations/employee-admin-notes/`
+  - `python manage.py import_timecard_csv --file <arquivo.csv> --encoding cp932 --month YYYY-MM`
+
+- Cartão ponto:
+  - importar arquivos `CSV`/`TXT` em `cp932`, `shift_jis` ou `utf-8`
+  - normalização automática de `社員CD` removendo sufixo `A/B/C`
+  - dashboard exibe `timecard_summary` e `timecard_divergences`
+  - drawer individual exibe registros de ponto do período
 
 - Produção (oculto da navegação, mas ativo na API):
   - `GET /api/operations/production-snapshots/dashboard/`
@@ -295,3 +302,29 @@ Impacto prático:
 5. Verificar conexão MySQL
 6. Aplicar correção mínima e revalidar smoke tests
 
+---
+
+## Anexo C - Validação de cartão ponto
+
+1. Importar arquivo de ponto:
+```bash
+cd /caminho/backend
+python manage.py import_timecard_csv --file /caminho/arquivo.csv --encoding cp932 --month 2026-05
+```
+2. Abrir o dashboard:
+```bash
+curl -i https://<dominio>/api/operations/attendance-dashboard/?month=2026-05
+```
+3. Conferir no payload:
+   - `timecard_summary.total_records`
+   - `timecard_summary.divergences_count`
+   - `timecard_divergences`
+4. Na UI:
+   - abrir `/operations/attendance-dashboard`
+   - conferir o KPI `Divergências cartão ponto`
+   - abrir `Cartão ponto x Escala`
+   - filtrar por tipo de divergência
+   - clicar em uma linha e abrir o drawer do funcionário
+5. No drawer:
+   - validar a seção `Cartão ponto`
+   - conferir entrada, saída, HE, atraso e saída antecipada

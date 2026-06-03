@@ -945,6 +945,43 @@ class EmployeeAdministrativeNote(BaseModel):
         return f"{self.employee_id} - {self.category} - {self.date}"
 
 
+class AttendanceTimecardRecord(BaseModel):
+    employee_code_raw = models.CharField(max_length=50)
+    employee_code_normalized = models.CharField(max_length=50, db_index=True)
+    employee_name = models.CharField(max_length=150, blank=True)
+    work_date = models.DateField(db_index=True)
+    work_type_code = models.CharField(max_length=50, blank=True)
+    work_type_name = models.CharField(max_length=150, blank=True)
+    shift_code = models.CharField(max_length=50, blank=True)
+    shift_name = models.CharField(max_length=150, blank=True)
+    clock_in = models.TimeField(blank=True, null=True)
+    clock_out = models.TimeField(blank=True, null=True)
+    total_work_minutes = models.PositiveIntegerField(default=0)
+    scheduled_work_minutes = models.PositiveIntegerField(default=0)
+    overtime_minutes = models.PositiveIntegerField(default=0)
+    late_minutes = models.PositiveIntegerField(default=0)
+    early_leave_minutes = models.PositiveIntegerField(default=0)
+    memo = models.TextField(blank=True)
+    source_file = models.CharField(max_length=255)
+    imported_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-work_date", "employee_code_normalized", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["employee_code_normalized", "work_date"],
+                name="unique_timecard_employee_code_date",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["employee_code_normalized", "work_date"]),
+            models.Index(fields=["source_file", "work_date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.employee_code_normalized} - {self.work_date}"
+
+
 class OperationRole(BaseModel):
     code = models.SlugField(max_length=50, unique=True)
     name = models.CharField(max_length=120)

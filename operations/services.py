@@ -14,6 +14,7 @@ from master.models import Process, Shift
 
 from .models import (
     AttendanceStatus,
+    AttendanceTimecardRecord,
     CalendarDayCell,
     CalendarEmployeeAssignment,
     OperationalCode,
@@ -62,6 +63,23 @@ PRODUCTION_FIELD_ALIASES = {
     "stopped_minutes": {"stopped_minutes", "stop_minutes", "tempo_parado"},
     "alarm_code": {"alarm_code", "alarm", "alarme"},
     "timestamp": {"timestamp", "datetime", "datahora", "updated_at", "last_update"},
+}
+TIMECARD_FIELD_ALIASES = {
+    "employee_code": {"社員cd", "社員_cd", "employee_code", "employeeid", "employee_id", "code"},
+    "employee_name": {"社員氏名", "employee_name", "name", "氏名"},
+    "work_date": {"年月日", "work_date", "date", "日付"},
+    "work_type_code": {"勤務種類cd", "work_type_code", "worktypecode"},
+    "work_type_name": {"勤務種類名", "work_type_name", "worktype", "worktypename"},
+    "shift_code": {"就業時間帯cd", "shift_code", "shiftcode"},
+    "shift_name": {"就業時間帯名", "shift_name", "shiftname"},
+    "clock_in": {"出勤1時刻", "clock_in", "start_time", "in_time"},
+    "clock_out": {"退勤1時刻", "clock_out", "end_time", "out_time"},
+    "total_work_minutes": {"総労働時間", "total_work_time", "total_work_minutes"},
+    "scheduled_work_minutes": {"就業時間", "scheduled_work_time", "scheduled_work_minutes"},
+    "overtime_minutes": {"残業", "overtime", "overtime_minutes"},
+    "late_minutes": {"遅刻時間1", "late_time", "late_minutes"},
+    "early_leave_minutes": {"早退時間1", "early_leave_time", "early_leave_minutes"},
+    "memo": {"備考", "memo", "notes"},
 }
 
 
@@ -1229,3 +1247,368 @@ def _calculate_production_metrics(rows):
         "error_count": error_count,
         "alarms_active": alarms_active,
     }
+
+
+def parse_timecard_csv(file_path, *, encoding="cp932", delimiter="auto", month=None):
+    raw_text = Path(file_path).read_text(encoding=encoding)
+    rows = [line for line in raw_text.splitlines() if line.strip()]
+    if not rows:
+        raise ValueError("Arquivo vazio.")
+
+    resolved_delimiter = _resolve_delimiter(rows[0], delimiter)
+    reader = csv.DictReader(rows, delimiter=resolved_delimiter)
+    if not reader.fieldnames:
+        raise ValueError("Arquivo sem cabeçalho válido.")
+
+    field_map = _build_timecard_field_map(reader.fieldnames)
+    expected_month = None
+    if month:
+        expected_month = date.fromisoformat(f"{month}-01").replace(day=1)
+
+    normalized_rows = []
+    warnings = []
+    for idx, row in enumerate(reader, start=2):
+        normalized = _normalize_timecard_row(row, field_map)
+        if not normalized:
+            continue
+        if expected_month and normalized["work_date"].replace(day=1) != expected_month:
+            warnings.append(f"Linha {idx}: registro fora do mês {month}, ignorado.")
+            continue
+        normalized_rows.append(normalized)
+
+    if not normalized_rows:
+        raise ValueError("Nenhum registro de cartão ponto válido encontrado.")
+
+    return {
+        "rows": normalized_rows,
+        "delimiter": resolved_delimiter,
+        "warnings": warnings,
+    }
+
+
+def import_timecard_csv(*, file_path, encoding="cp932", delimiter="auto", month=None, dry_run=False, source_file=None, user=None):
+    parsed = parse_timecard_csv(file_path, encoding=encoding, delimiter=delimiter, month=month)
+    rows = parsed["rows"]
+    created = 0
+    updated = 0
+    duplicate_count = 0
+    source_label = source_file or str(file_path)
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "created": 0,
+            "updated": 0,
+            "duplicate_count": 0,
+            "rows_count": len(rows),
+            "warnings": parsed["warnings"],
+            "records": rows,
+        }
+
+    with transaction.atomic():
+        for row in rows:
+            defaults = {
+                "employee_code_raw": row["employee_code_raw"],
+                "employee_name": row["employee_name"],
+                "work_type_code": row["work_type_code"],
+                "work_type_name": row["work_type_name"],
+                "shift_code": row["shift_code"],
+                "shift_name": row["shift_name"],
+                "clock_in": row["clock_in"],
+                "clock_out": row["clock_out"],
+                "total_work_minutes": row["total_work_minutes"],
+                "scheduled_work_minutes": row["scheduled_work_minutes"],
+                "overtime_minutes": row["overtime_minutes"],
+                "late_minutes": row["late_minutes"],
+                "early_leave_minutes": row["early_leave_minutes"],
+                "memo": row["memo"],
+                "source_file": source_label,
+                "updated_by": user,
+            }
+            obj, is_created = AttendanceTimecardRecord.objects.update_or_create(
+                employee_code_normalized=row["employee_code_normalized"],
+                work_date=row["work_date"],
+                defaults={**defaults, "created_by": user},
+            )
+            if is_created:
+                created += 1
+            else:
+                updated += 1
+        duplicate_count = len(rows) - created
+
+    return {
+        "dry_run": False,
+        "created": created,
+        "updated": updated,
+        "duplicate_count": duplicate_count,
+        "rows_count": len(rows),
+        "warnings": parsed["warnings"],
+    }
+
+
+def compare_timecard_to_calendar(calendar, records=None):
+    if records is None:
+        records = AttendanceTimecardRecord.objects.all()
+
+    day_cells = (
+        CalendarDayCell.objects.filter(calendar=calendar)
+        .select_related("assignment", "assignment__employee", "attendance_status", "work_time_code")
+    )
+    relevant_employee_codes = {
+        _normalize_employee_code(
+            getattr(cell.assignment.employee, "employee_cd", "") or getattr(cell.assignment.employee, "employee_id", "")
+        )
+        for cell in day_cells
+        if getattr(cell.assignment, "employee", None)
+    }
+    records = [
+        record
+        for record in records
+        if record.employee_code_normalized in relevant_employee_codes
+        and record.work_date.year == calendar.year
+        and record.work_date.month == calendar.month
+    ]
+    record_map = {
+        (record.employee_code_normalized, record.work_date): record
+        for record in records
+    }
+
+    divergences = []
+    matched_keys = set()
+    for cell in day_cells:
+        employee = getattr(cell.assignment, "employee", None)
+        employee_code = _normalize_employee_code(getattr(employee, "employee_cd", "") or getattr(employee, "employee_id", ""))
+        employee_name = (
+            getattr(employee, "name_en", None)
+            or getattr(employee, "internal_name", None)
+            or getattr(employee, "name_jp", None)
+            or ""
+        )
+        record = record_map.get((employee_code, cell.date))
+        planned_minutes = int(cell.scheduled_regular_minutes or 0) + int(cell.scheduled_overtime_minutes or 0)
+        planned_overtime = int(cell.scheduled_overtime_minutes or 0)
+
+        if not record:
+            if getattr(cell.attendance_status, "is_working_day", False):
+                divergences.append(
+                    {
+                        "employee_code": employee_code,
+                        "employee_name": employee_name,
+                        "date": cell.date,
+                        "type": "missing_timecard",
+                        "severity": "warning",
+                        "expected": "Registro de ponto",
+                        "actual": "Sem registro",
+                        "message": "Escala marcou trabalho, mas nao existe registro de ponto.",
+                    }
+                )
+            continue
+        matched_keys.add((employee_code, cell.date))
+
+        actual_work = int(record.total_work_minutes or 0)
+        actual_overtime = int(record.overtime_minutes or 0)
+        record_name = record.employee_name or employee_name
+
+        if not getattr(cell.attendance_status, "is_working_day", False) and actual_work > 0:
+            divergences.append(
+                {
+                    "employee_code": employee_code,
+                    "employee_name": record_name,
+                    "date": cell.date,
+                    "type": "worked_on_day_off",
+                    "severity": "warning",
+                    "expected": "Folga",
+                    "actual": "Trabalho registrado",
+                    "message": "Escala marcou folga, mas o ponto mostra trabalho.",
+                }
+            )
+
+        if int(record.late_minutes or 0) > 0:
+            divergences.append(
+                {
+                    "employee_code": employee_code,
+                    "employee_name": record_name,
+                    "date": cell.date,
+                    "type": "late",
+                    "severity": "warning",
+                    "expected": "Sem atraso",
+                    "actual": f"{int(record.late_minutes or 0)} min",
+                    "message": "Registro aponta atraso.",
+                }
+            )
+
+        if int(record.early_leave_minutes or 0) > 0:
+            divergences.append(
+                {
+                    "employee_code": employee_code,
+                    "employee_name": record_name,
+                    "date": cell.date,
+                    "type": "early_leave",
+                    "severity": "warning",
+                    "expected": "Sem saída antecipada",
+                    "actual": f"{int(record.early_leave_minutes or 0)} min",
+                    "message": "Registro aponta saida antecipada.",
+                }
+            )
+
+        if planned_minutes and actual_work != planned_minutes:
+            divergences.append(
+                {
+                    "employee_code": employee_code,
+                    "employee_name": record_name,
+                    "date": cell.date,
+                    "type": "work_minutes_mismatch",
+                    "severity": "warning",
+                    "expected": f"{planned_minutes} min",
+                    "actual": f"{actual_work} min",
+                    "message": "Jornada real difere da prevista.",
+                    "planned_minutes": planned_minutes,
+                    "actual_minutes": actual_work,
+                }
+            )
+
+        if planned_overtime != actual_overtime:
+            divergences.append(
+                {
+                    "employee_code": employee_code,
+                    "employee_name": record_name,
+                    "date": cell.date,
+                    "type": "overtime_mismatch",
+                    "severity": "warning",
+                    "expected": f"{planned_overtime} min",
+                    "actual": f"{actual_overtime} min",
+                    "message": "Hora extra real difere da planejada.",
+                    "planned_overtime_minutes": planned_overtime,
+                    "actual_overtime_minutes": actual_overtime,
+                }
+            )
+
+    for record in records:
+        key = (record.employee_code_normalized, record.work_date)
+        if key in matched_keys:
+            continue
+        divergences.append(
+            {
+                "employee_code": record.employee_code_normalized,
+                "employee_name": record.employee_name or "",
+                "date": record.work_date,
+                "type": "timecard_without_calendar_cell",
+                "severity": "warning",
+                "expected": "Célula de escala correspondente",
+                "actual": "Registro sem célula",
+                "message": "Registro de ponto sem célula correspondente no calendário.",
+            }
+        )
+
+    return divergences
+
+
+def _build_timecard_field_map(fieldnames):
+    mapping = {}
+    normalized = {name: _normalize_lookup_value(name).replace("-", "_").replace(" ", "_") for name in fieldnames}
+    for target_field, aliases in TIMECARD_FIELD_ALIASES.items():
+        for original, normalized_name in normalized.items():
+            if normalized_name in aliases:
+                mapping[target_field] = original
+                break
+
+    missing = [
+        required
+        for required in ("employee_code", "employee_name", "work_date", "clock_in", "clock_out", "total_work_minutes")
+        if required not in mapping
+    ]
+    if missing:
+        raise ValueError(f"Cabeçalho inválido. Campos obrigatórios ausentes: {', '.join(missing)}")
+    return mapping
+
+
+def _normalize_timecard_row(row, field_map):
+    raw_code = _read_field(row, field_map, "employee_code")
+    normalized_code = _normalize_employee_code(raw_code)
+    if not normalized_code:
+        return None
+
+    work_date = _parse_date(_read_field(row, field_map, "work_date"))
+    if not work_date:
+        return None
+
+    return {
+        "employee_code_raw": raw_code,
+        "employee_code_normalized": normalized_code,
+        "employee_name": _read_field(row, field_map, "employee_name"),
+        "work_date": work_date,
+        "work_type_code": _read_field(row, field_map, "work_type_code"),
+        "work_type_name": _read_field(row, field_map, "work_type_name"),
+        "shift_code": _read_field(row, field_map, "shift_code"),
+        "shift_name": _read_field(row, field_map, "shift_name"),
+        "clock_in": _parse_time(_read_field(row, field_map, "clock_in")),
+        "clock_out": _parse_time(_read_field(row, field_map, "clock_out")),
+        "total_work_minutes": _parse_duration_minutes(_read_field(row, field_map, "total_work_minutes")),
+        "scheduled_work_minutes": _parse_duration_minutes(_read_field(row, field_map, "scheduled_work_minutes")),
+        "overtime_minutes": _parse_duration_minutes(_read_field(row, field_map, "overtime_minutes")),
+        "late_minutes": _parse_duration_minutes(_read_field(row, field_map, "late_minutes")),
+        "early_leave_minutes": _parse_duration_minutes(_read_field(row, field_map, "early_leave_minutes")),
+        "memo": _read_field(row, field_map, "memo"),
+    }
+
+
+def _normalize_employee_code(value):
+    token = str(value or "").strip()
+    if not token:
+        return ""
+    if token[-1:].upper() in {"A", "B", "C"} and token[:-1].isdigit():
+        return token[:-1]
+    return token
+
+
+def _parse_date(value):
+    token = str(value or "").strip()
+    if not token:
+        return None
+    formats = ["%Y-%m-%d", "%Y/%m/%d", "%Y%m%d", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"]
+    for fmt in formats:
+        try:
+            parsed = datetime.strptime(token, fmt)
+            return parsed.date()
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(token).date()
+    except ValueError:
+        return None
+
+
+def _parse_time(value):
+    token = str(value or "").strip()
+    if not token:
+        return None
+    if token in {"-","--"}:
+        return None
+    formats = ["%H:%M", "%H:%M:%S", "%H%M", "%H.%M"]
+    for fmt in formats:
+        try:
+            return datetime.strptime(token, fmt).time()
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_duration_minutes(value):
+    token = str(value or "").strip()
+    if not token:
+        return 0
+    if token in {"-", "--"}:
+        return 0
+    if ":" in token:
+        parts = token.split(":")
+        try:
+            hours = int(parts[0])
+            minutes = int(parts[1]) if len(parts) > 1 else 0
+            return hours * 60 + minutes
+        except ValueError:
+            return 0
+    token = token.replace(",", "")
+    try:
+        return int(float(token))
+    except ValueError:
+        return 0
